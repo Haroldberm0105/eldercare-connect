@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<con:soapui-project id="9b730f77-ffec-4458-b9d6-5fb3385557ec" activeEnvironment="Default" name="ElderCare Connect - Legacy EMR Integration" resourceRoot="" soapui-version="5.7.2" abortOnError="false" runType="SEQUENTIAL" xmlns:con="http://eviware.com/soapui/config"><con:description>SoapUI tests for the Legacy Clinic EMR SOAP contract (GetPatientHistory) and the ElderCare SOAP/XML -> JSON adapter. Start the stack (docker compose up) or run services/mock-legacy-emr and services/legacy-emr-adapter locally. Adjust project properties for other hosts.</con:description><con:settings/><con:interface xsi:type="con:WsdlInterface" id="20e1175b-31e9-4dd6-a517-27f588056408" wsaVersion="NONE" name="LegacyClinicEmrSoapBinding" type="wsdl" bindingName="{http://rhu.health.gov.ph/emr/v1}LegacyClinicEmrSoapBinding" soapVersion="1_1" anonymous="optional" definition="http://localhost:4005/emr?wsdl" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><con:settings/><con:definitionCache type="TEXT" rootPart="http://localhost:4005/emr?wsdl"><con:part><con:url>http://localhost:4005/emr?wsdl</con:url><con:content><![CDATA[<?xml version="1.0" encoding="UTF-8"?>
+<!-- Legacy RHU Clinic EMR - SOAP 1.1 contract for GetPatientHistory.
+     Used by the mock server, the ElderCare Legacy EMR Adapter, and the SoapUI test project. -->
+<wsdl:definitions name="LegacyClinicEmr"
+    targetNamespace="http://rhu.health.gov.ph/emr/v1"
+    xmlns:tns="http://rhu.health.gov.ph/emr/v1"
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+
+  <wsdl:types>
+    <xsd:schema targetNamespace="http://rhu.health.gov.ph/emr/v1" elementFormDefault="qualified">
+      <xsd:element name="GetPatientHistoryRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="PatientId" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:complexType name="Diagnosis">
+        <xsd:sequence>
+          <xsd:element name="IcdCode" type="xsd:string"/>
+          <xsd:element name="Description" type="xsd:string"/>
+          <xsd:element name="DiagnosedOn" type="xsd:string"/>
+          <xsd:element name="Chronic" type="xsd:boolean"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:complexType name="Visit">
+        <xsd:sequence>
+          <xsd:element name="VisitId" type="xsd:string"/>
+          <xsd:element name="VisitDate" type="xsd:string"/>
+          <xsd:element name="VisitType" type="xsd:string"/>
+          <xsd:element name="Facility" type="xsd:string"/>
+          <xsd:element name="ChiefComplaint" type="xsd:string" minOccurs="0"/>
+          <xsd:element name="BloodPressure" type="xsd:string" minOccurs="0"/>
+          <xsd:element name="Remarks" type="xsd:string" minOccurs="0"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:complexType name="Medication">
+        <xsd:sequence>
+          <xsd:element name="DrugName" type="xsd:string"/>
+          <xsd:element name="Dosage" type="xsd:string"/>
+          <xsd:element name="Frequency" type="xsd:string"/>
+          <xsd:element name="Active" type="xsd:boolean"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:element name="GetPatientHistoryResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="PatientHistory">
+              <xsd:complexType>
+                <xsd:sequence>
+                  <xsd:element name="PatientId" type="xsd:string"/>
+                  <xsd:element name="FacilityCode" type="xsd:string"/>
+                  <xsd:element name="FullName" type="xsd:string"/>
+                  <xsd:element name="BirthDate" type="xsd:string"/>
+                  <xsd:element name="Sex" type="xsd:string"/>
+                  <xsd:element name="Diagnoses"><xsd:complexType><xsd:sequence>
+                    <xsd:element name="Diagnosis" type="tns:Diagnosis" minOccurs="0" maxOccurs="unbounded"/>
+                  </xsd:sequence></xsd:complexType></xsd:element>
+                  <xsd:element name="Visits"><xsd:complexType><xsd:sequence>
+                    <xsd:element name="Visit" type="tns:Visit" minOccurs="0" maxOccurs="unbounded"/>
+                  </xsd:sequence></xsd:complexType></xsd:element>
+                  <xsd:element name="Medications"><xsd:complexType><xsd:sequence>
+                    <xsd:element name="Medication" type="tns:Medication" minOccurs="0" maxOccurs="unbounded"/>
+                  </xsd:sequence></xsd:complexType></xsd:element>
+                  <xsd:element name="Allergies"><xsd:complexType><xsd:sequence>
+                    <xsd:element name="Allergy" type="xsd:string" minOccurs="0" maxOccurs="unbounded"/>
+                  </xsd:sequence></xsd:complexType></xsd:element>
+                </xsd:sequence>
+              </xsd:complexType>
+            </xsd:element>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+    </xsd:schema>
+  </wsdl:types>
+
+  <wsdl:message name="GetPatientHistoryInput">
+    <wsdl:part name="parameters" element="tns:GetPatientHistoryRequest"/>
+  </wsdl:message>
+  <wsdl:message name="GetPatientHistoryOutput">
+    <wsdl:part name="parameters" element="tns:GetPatientHistoryResponse"/>
+  </wsdl:message>
+
+  <wsdl:portType name="LegacyClinicEmrPortType">
+    <wsdl:operation name="GetPatientHistory">
+      <wsdl:input message="tns:GetPatientHistoryInput"/>
+      <wsdl:output message="tns:GetPatientHistoryOutput"/>
+    </wsdl:operation>
+  </wsdl:portType>
+
+  <wsdl:binding name="LegacyClinicEmrSoapBinding" type="tns:LegacyClinicEmrPortType">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="GetPatientHistory">
+      <soap:operation soapAction="http://rhu.health.gov.ph/emr/v1/GetPatientHistory"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="LegacyClinicEmrService">
+    <wsdl:port name="LegacyClinicEmrPort" binding="tns:LegacyClinicEmrSoapBinding">
+      <soap:address location="http://localhost:4005/emr"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>
+]]></con:content><con:type>http://schemas.xmlsoap.org/wsdl/</con:type></con:part></con:definitionCache><con:endpoints><con:endpoint>http://localhost:4005/emr</con:endpoint></con:endpoints><con:operation id="0e3e91a5-fe65-4692-b0ae-9707e3f0a3e4" isOneWay="false" action="http://rhu.health.gov.ph/emr/v1/GetPatientHistory" name="GetPatientHistory" bindingOperationName="GetPatientHistory" type="Request-Response" inputName="" receivesAttachments="false" sendsAttachments="false" anonymous="optional"><con:settings/><con:call id="efd429f0-7cd2-4845-b12d-8b711566e0bd" name="Sample - P-1001"><con:settings/><con:encoding>UTF-8</con:encoding><con:endpoint>http://localhost:4005/emr</con:endpoint><con:request><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:emr="http://rhu.health.gov.ph/emr/v1">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <emr:GetPatientHistoryRequest>
+         <emr:PatientId>P-1001</emr:PatientId>
+      </emr:GetPatientHistoryRequest>
+   </soapenv:Body>
+</soapenv:Envelope>]]></con:request><con:wsaConfig mustUnderstand="NONE" version="200508" action="http://rhu.health.gov.ph/emr/v1/GetPatientHistory"/></con:call></con:operation></con:interface><con:testSuite id="34942955-aa39-457f-be69-244291e1f131" name="Legacy EMR Integration Suite"><con:settings/><con:runType>SEQUENTIAL</con:runType><con:testCase id="11bfeb59-e1f9-45dd-a317-2c6a33ce27d2" failOnError="true" failTestCaseOnErrors="true" keepSession="false" maxResults="0" name="TC1 - GetPatientHistory (known patient)" searchProperties="true"><con:description>Live call against the legacy EMR (or the bundled mock) - verifies WSDL contract compliance.</con:description><con:settings/><con:testStep type="request" name="GetPatientHistory P-1001" id="e18e199e-8754-4898-a76b-fd5a4ea836ab"><con:settings/><con:config xsi:type="con:RequestStep" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><con:interface>LegacyClinicEmrSoapBinding</con:interface><con:operation>GetPatientHistory</con:operation><con:request name="GetPatientHistory P-1001" id="98513c89-1179-484b-8135-b37e960663f3"><con:settings><con:setting id="com.eviware.soapui.impl.wsdl.WsdlRequest@request-headers">&lt;xml-fragment/></con:setting></con:settings><con:encoding>UTF-8</con:encoding><con:endpoint>${#Project#emrEndpoint}</con:endpoint><con:request><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:emr="http://rhu.health.gov.ph/emr/v1">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <emr:GetPatientHistoryRequest>
+         <emr:PatientId>P-1001</emr:PatientId>
+      </emr:GetPatientHistoryRequest>
+   </soapenv:Body>
+</soapenv:Envelope>]]></con:request><con:assertion type="SOAP Response" id="dd0d1d0d-98a6-44b6-9251-3370cd41e1ac" name="Valid SOAP response"><con:configuration/></con:assertion><con:assertion type="Not SOAP Fault Assertion" id="f21b2a01-f4c5-461a-ac4a-a0bf19b3cffb" name="Not a SOAP Fault"><con:configuration/></con:assertion><con:assertion type="Schema Compliance" id="21d71b82-8843-4498-b008-239d96babe9b" name="WSDL schema compliance"><con:configuration><definition/></con:configuration></con:assertion><con:assertion type="XPath Match" id="8bd5f89a-c3ab-4b25-b5ff-623e80e114a3" name="PatientId echoed"><con:configuration><path>declare namespace emr='http://rhu.health.gov.ph/emr/v1';
+//emr:PatientHistory/emr:PatientId</path><content>P-1001</content><allowWildcards>false</allowWildcards><ignoreNamspaceDifferences>false</ignoreNamspaceDifferences><ignoreComments>false</ignoreComments></con:configuration></con:assertion><con:assertion type="XPath Match" id="42cb268f-f101-4a4c-b07e-3c0abbe13db7" name="Has diagnoses"><con:configuration><path>declare namespace emr='http://rhu.health.gov.ph/emr/v1';
+count(//emr:Diagnosis) &gt; 0</path><content>true</content><allowWildcards>false</allowWildcards><ignoreNamspaceDifferences>false</ignoreNamspaceDifferences><ignoreComments>false</ignoreComments></con:configuration></con:assertion><con:assertion type="XPath Match" id="162b5bfd-d970-419a-bbb5-28d0e9fc1afd" name="Has visits"><con:configuration><path>declare namespace emr='http://rhu.health.gov.ph/emr/v1';
+count(//emr:Visit) &gt; 0</path><content>true</content><allowWildcards>false</allowWildcards><ignoreNamspaceDifferences>false</ignoreNamspaceDifferences><ignoreComments>false</ignoreComments></con:configuration></con:assertion><con:assertion type="Response SLA Assertion" id="b035df17-513f-4fa7-b5b3-e33bed04436d" name="Response SLA &lt;= 2000 ms"><con:configuration><SLA>2000</SLA></con:configuration></con:assertion><con:credentials><con:authType>No Authorization</con:authType></con:credentials><con:jmsConfig JMSDeliveryMode="PERSISTENT"/><con:jmsPropertyConfig/><con:wsaConfig mustUnderstand="NONE" version="200508" action="http://rhu.health.gov.ph/emr/v1/GetPatientHistory"/><con:wsrmConfig version="1.2"/></con:request></con:config></con:testStep><con:properties/></con:testCase><con:testCase id="08b68c4b-7ccc-4887-937d-b63986074f07" failOnError="true" failTestCaseOnErrors="true" keepSession="false" maxResults="0" name="TC2 - Unknown patient returns SOAP Fault" searchProperties="true"><con:description>Negative test: the adapter maps this fault to HTTP 404.</con:description><con:settings/><con:testStep type="request" name="GetPatientHistory P-404" id="7c96b02e-5a07-4e39-8cdb-e5a788a69695"><con:settings/><con:config xsi:type="con:RequestStep" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><con:interface>LegacyClinicEmrSoapBinding</con:interface><con:operation>GetPatientHistory</con:operation><con:request name="GetPatientHistory P-404" id="76384eb1-84c7-4967-85dd-f1d7e04c76fa"><con:settings><con:setting id="com.eviware.soapui.impl.wsdl.WsdlRequest@request-headers">&lt;xml-fragment/></con:setting></con:settings><con:encoding>UTF-8</con:encoding><con:endpoint>${#Project#emrEndpoint}</con:endpoint><con:request><![CDATA[<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:emr="http://rhu.health.gov.ph/emr/v1">
+   <soapenv:Header/>
+   <soapenv:Body>
+      <emr:GetPatientHistoryRequest>
+         <emr:PatientId>P-404</emr:PatientId>
+      </emr:GetPatientHistoryRequest>
+   </soapenv:Body>
+</soapenv:Envelope>]]></con:request><con:assertion type="SOAP Fault Assertion" id="aa6f37ad-39e2-4cf1-acb4-7c5334e949e5" name="Is a SOAP Fault"><con:configuration/></con:assertion><con:assertion type="Simple Contains" id="dd7672f4-cbeb-4c64-b149-7f2ef2b1d9d0" name="PatientNotFound fault code"><con:configuration><token>PatientNotFound</token><ignoreCase>false</ignoreCase><useRegEx>false</useRegEx></con:configuration></con:assertion><con:credentials><con:authType>No Authorization</con:authType></con:credentials><con:jmsConfig JMSDeliveryMode="PERSISTENT"/><con:jmsPropertyConfig/><con:wsaConfig mustUnderstand="NONE" version="200508" action="http://rhu.health.gov.ph/emr/v1/GetPatientHistory"/><con:wsrmConfig version="1.2"/></con:request></con:config></con:testStep><con:properties/></con:testCase><con:testCase id="e1b35686-c51f-4721-aa70-868d539dc23a" failOnError="true" failTestCaseOnErrors="true" keepSession="false" maxResults="0" name="TC3 - Adapter translates SOAP/XML to internal JSON" searchProperties="true"><con:description>Protocol mediation: SOAP response in, JSON contract out (Section 10 / 15).</con:description><con:settings/><con:testStep type="httprequest" name="POST /legacy/translate" id="b4fdf17b-1a35-4468-8014-1fdfa3d25862"><con:settings/><con:config method="POST" xsi:type="con:HttpRequest" id="6c98fd4e-e8d8-4534-a8ad-2886713a89e9" name="POST /legacy/translate" postQueryString="false" mediaType="text/xml" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><con:settings><con:setting id="com.eviware.soapui.impl.wsdl.WsdlRequest@request-headers">&lt;xml-fragment xmlns:con="http://eviware.com/soapui/config">
+  &lt;con:entry key="X-Internal-Token" value="${#Project#internalToken}"/>
+&lt;/xml-fragment></con:setting></con:settings><con:endpoint>${#Project#adapterUrl}/legacy/translate</con:endpoint><con:request><![CDATA[<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:emr="http://rhu.health.gov.ph/emr/v1">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <emr:GetPatientHistoryResponse>
+      <emr:PatientHistory>
+        <emr:PatientId>P-1001</emr:PatientId>
+        <emr:FacilityCode>RHU-MNL-01</emr:FacilityCode>
+        <emr:FullName>DELA CRUZ, REMEDIOS</emr:FullName>
+        <emr:BirthDate>03/14/1946</emr:BirthDate>
+        <emr:Sex>F</emr:Sex>
+        <emr:Diagnoses>
+          <emr:Diagnosis><emr:IcdCode>I10</emr:IcdCode><emr:Description>Essential (primary) hypertension</emr:Description><emr:DiagnosedOn>06/02/2015</emr:DiagnosedOn><emr:Chronic>true</emr:Chronic></emr:Diagnosis>
+          <emr:Diagnosis><emr:IcdCode>I25.10</emr:IcdCode><emr:Description>Atherosclerotic heart disease</emr:Description><emr:DiagnosedOn>01/19/2020</emr:DiagnosedOn><emr:Chronic>true</emr:Chronic></emr:Diagnosis>
+        </emr:Diagnoses>
+        <emr:Visits>
+          <emr:Visit><emr:VisitId>V-88121</emr:VisitId><emr:VisitDate>08/22/2026</emr:VisitDate><emr:VisitType>CONSULT</emr:VisitType><emr:Facility>RHU Tondo</emr:Facility><emr:ChiefComplaint>Dizziness</emr:ChiefComplaint><emr:BloodPressure>162/98</emr:BloodPressure><emr:Remarks>Adjusted amlodipine dose</emr:Remarks></emr:Visit>
+          <emr:Visit><emr:VisitId>V-87002</emr:VisitId><emr:VisitDate>04/03/2026</emr:VisitDate><emr:VisitType>ADMIT</emr:VisitType><emr:Facility>Gat Andres Bonifacio Memorial MC</emr:Facility><emr:ChiefComplaint>Hypertensive urgency</emr:ChiefComplaint><emr:BloodPressure>188/112</emr:BloodPressure><emr:Remarks>Admitted 2 days</emr:Remarks></emr:Visit>
+          <emr:Visit><emr:VisitId>V-85510</emr:VisitId><emr:VisitDate>11/15/2025</emr:VisitDate><emr:VisitType>FOLLOWUP</emr:VisitType><emr:Facility>RHU Tondo</emr:Facility><emr:ChiefComplaint>BP monitoring</emr:ChiefComplaint><emr:BloodPressure>140/88</emr:BloodPressure><emr:Remarks></emr:Remarks></emr:Visit>
+        </emr:Visits>
+        <emr:Medications>
+          <emr:Medication><emr:DrugName>Amlodipine</emr:DrugName><emr:Dosage>10 mg</emr:Dosage><emr:Frequency>Once daily</emr:Frequency><emr:Active>true</emr:Active></emr:Medication>
+          <emr:Medication><emr:DrugName>Losartan</emr:DrugName><emr:Dosage>50 mg</emr:Dosage><emr:Frequency>Once daily</emr:Frequency><emr:Active>true</emr:Active></emr:Medication>
+          <emr:Medication><emr:DrugName>Aspirin</emr:DrugName><emr:Dosage>80 mg</emr:Dosage><emr:Frequency>Once daily</emr:Frequency><emr:Active>true</emr:Active></emr:Medication>
+        </emr:Medications>
+        <emr:Allergies>
+          <emr:Allergy>Penicillin</emr:Allergy>
+        </emr:Allergies>
+      </emr:PatientHistory>
+    </emr:GetPatientHistoryResponse>
+  </soapenv:Body>
+</soapenv:Envelope>]]></con:request><con:assertion type="Valid HTTP Status Codes" id="01406c8a-96fb-4111-83fb-3f70668123ce" name="HTTP 200"><con:configuration><codes>200</codes></con:configuration></con:assertion><con:assertion type="Simple Contains" id="c66e847f-4a65-4385-bb86-0849a74f89c3" name="source is legacy-emr"><con:configuration><token>"source":"legacy-emr"</token><ignoreCase>false</ignoreCase><useRegEx>false</useRegEx></con:configuration></con:assertion><con:assertion type="Simple Contains" id="b38e0277-9da4-4eda-9378-c78d99e5816c" name="ISO birth date"><con:configuration><token>"birthDate":"1946-03-14"</token><ignoreCase>false</ignoreCase><useRegEx>false</useRegEx></con:configuration></con:assertion><con:assertion type="Simple Contains" id="295625a6-c77e-4eea-a445-402170efcbfe" name="visit type mapped"><con:configuration><token>"type":"admission"</token><ignoreCase>false</ignoreCase><useRegEx>false</useRegEx></con:configuration></con:assertion><con:assertion type="Simple Contains" id="2fa48930-0c0b-460c-ac8c-1d34f2d44353" name="BP parsed"><con:configuration><token>"systolic":188</token><ignoreCase>false</ignoreCase><useRegEx>false</useRegEx></con:configuration></con:assertion><con:credentials><con:authType>No Authorization</con:authType></con:credentials><con:jmsConfig JMSDeliveryMode="PERSISTENT"/><con:jmsPropertyConfig/><con:parameters/></con:config></con:testStep><con:properties/></con:testCase><con:testCase id="9dcf524a-3bff-4eeb-9f89-7ebebee728f5" failOnError="true" failTestCaseOnErrors="true" keepSession="false" maxResults="0" name="TC4 - Adapter end-to-end (adapter -&gt; SOAP EMR -&gt; JSON)" searchProperties="true"><con:description>Requires the adapter running with INTERNAL_SERVICE_TOKEN matching the project property.</con:description><con:settings/><con:testStep type="httprequest" name="GET /legacy/patients/P-1001/history" id="beec1d09-b32e-4c88-b15a-7bb92b60d26d"><con:settings/><con:config method="GET" xsi:type="con:HttpRequest" id="f296e044-18ba-4edf-8be5-db2267819dbf" name="GET /legacy/patients/P-1001/history" postQueryString="false" mediaType="application/json" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><con:settings><con:setting id="com.eviware.soapui.impl.wsdl.WsdlRequest@request-headers">&lt;xml-fragment xmlns:con="http://eviware.com/soapui/config">
+  &lt;con:entry key="X-Internal-Token" value="${#Project#internalToken}"/>
+&lt;/xml-fragment></con:setting></con:settings><con:endpoint>${#Project#adapterUrl}/legacy/patients/P-1001/history</con:endpoint><con:request/><con:assertion type="Valid HTTP Status Codes" id="c2cdc4c0-5a87-4b5a-963a-1eefd1f54cb8" name="HTTP 200"><con:configuration><codes>200</codes></con:configuration></con:assertion><con:assertion type="Simple Contains" id="17a290ea-f47f-46bc-a4ce-04cf2e83d2f5" name="patientId"><con:configuration><token>"patientId":"P-1001"</token><ignoreCase>false</ignoreCase><useRegEx>false</useRegEx></con:configuration></con:assertion><con:assertion type="Simple Contains" id="a1bf7488-d168-40d1-aa1d-79a90ff88e19" name="diagnosis code"><con:configuration><token>"code":"I10"</token><ignoreCase>false</ignoreCase><useRegEx>false</useRegEx></con:configuration></con:assertion><con:assertion type="Response SLA Assertion" id="a3d43f42-fe51-4c80-b865-d117803d534a" name="Response SLA &lt;= 3000 ms"><con:configuration><SLA>3000</SLA></con:configuration></con:assertion><con:credentials><con:authType>No Authorization</con:authType></con:credentials><con:jmsConfig JMSDeliveryMode="PERSISTENT"/><con:jmsPropertyConfig/><con:parameters/></con:config></con:testStep><con:testStep type="httprequest" name="GET /legacy/patients/P-404/history (fault -&gt; 404)" id="6b20470e-b40d-4abd-9179-71e5f0fcd4e5"><con:settings/><con:config method="GET" xsi:type="con:HttpRequest" id="c64d3d62-a396-462d-b1d8-eb2d2d9b3414" name="GET /legacy/patients/P-404/history (fault -&gt; 404)" postQueryString="false" mediaType="application/json" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><con:settings><con:setting id="com.eviware.soapui.impl.wsdl.WsdlRequest@request-headers">&lt;xml-fragment xmlns:con="http://eviware.com/soapui/config">
+  &lt;con:entry key="X-Internal-Token" value="${#Project#internalToken}"/>
+&lt;/xml-fragment></con:setting></con:settings><con:endpoint>${#Project#adapterUrl}/legacy/patients/P-404/history</con:endpoint><con:request/><con:assertion type="Valid HTTP Status Codes" id="cc9aa864-7080-4849-8735-4db4cfcd7cc0" name="HTTP 404"><con:configuration><codes>404</codes></con:configuration></con:assertion><con:assertion type="Simple Contains" id="1e45fb75-ee3b-4ae7-860c-ade08279408a" name="not_found"><con:configuration><token>"error":"not_found"</token><ignoreCase>false</ignoreCase><useRegEx>false</useRegEx></con:configuration></con:assertion><con:credentials><con:authType>No Authorization</con:authType></con:credentials><con:jmsConfig JMSDeliveryMode="PERSISTENT"/><con:jmsPropertyConfig/><con:parameters/></con:config></con:testStep><con:properties/></con:testCase><con:properties/></con:testSuite><con:properties><con:property><con:name>emrEndpoint</con:name><con:value>http://localhost:4005/emr</con:value></con:property><con:property><con:name>adapterUrl</con:name><con:value>http://localhost:4004</con:value></con:property><con:property><con:name>internalToken</con:name><con:value>change-me-internal-service-token</con:value></con:property></con:properties><con:wssContainer/><con:oAuth2ProfileContainer/><con:oAuth1ProfileContainer/></con:soapui-project>

@@ -1,0 +1,149 @@
+# ElderCare Connect - full local stack
+#   cp .env.example .env    (then fill in secrets / API keys)
+#   docker compose up --build
+# Public entry point: http://localhost:8080  (API Gateway)
+# One PostgreSQL instance per microservice (Section 9 / Section 18 data-ownership rule).
+
+x-node-service: &node-service
+  restart: unless-stopped
+  networks: [internal]
+
+services:
+  # ------------------------------ Databases ------------------------------
+  checkin-db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: checkin_db, POSTGRES_USER: checkin_user, POSTGRES_PASSWORD: "${CHECKIN_DB_PASSWORD:-checkin_pass}" }
+    volumes: [checkin-data:/var/lib/postgresql/data]
+    ports: ["5433:5432"]           # dev only - remove in production
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U checkin_user -d checkin_db"], interval: 5s, retries: 10 }
+    networks: [internal]
+
+  alert-db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: alert_db, POSTGRES_USER: alert_user, POSTGRES_PASSWORD: "${ALERT_DB_PASSWORD:-alert_pass}" }
+    volumes: [alert-data:/var/lib/postgresql/data]
+    ports: ["5434:5432"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U alert_user -d alert_db"], interval: 5s, retries: 10 }
+    networks: [internal]
+
+  clinic-db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: clinic_db, POSTGRES_USER: clinic_user, POSTGRES_PASSWORD: "${CLINIC_DB_PASSWORD:-clinic_pass}" }
+    volumes: [clinic-data:/var/lib/postgresql/data]
+    ports: ["5435:5432"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U clinic_user -d clinic_db"], interval: 5s, retries: 10 }
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redis-data:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, retries: 10 }
+    networks: [internal]
+
+  # ------------------------------ Services -------------------------------
+  api-gateway:
+    <<: *node-service
+    build: ./api-gateway
+    ports: ["8080:8080"]
+    environment:
+      PORT: 8080
+      NODE_ENV: production
+      SERVICE_NAME: api-gateway
+      CORS_ORIGINS: "${CORS_ORIGINS:-http://localhost:3000}"
+      JWT_ALGORITHM: HS256
+      JWT_SECRET: "${JWT_SECRET:?set JWT_SECRET in .env}"
+      JWT_REFRESH_SECRET: "${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET in .env}"
+      JWT_ACCESS_TTL: "${JWT_ACCESS_TTL:-15m}"
+      INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}"
+      CHECKIN_SERVICE_URL: http://checkin-service:4001
+      ALERT_SERVICE_URL: http://alert-service:4002
+      CLINIC_SERVICE_URL: http://clinic-risk-service:4003
+      LEGACY_ADAPTER_URL: http://legacy-emr-adapter:4004
+      RATE_LIMIT_MAX: "${RATE_LIMIT_MAX:-300}"
+    depends_on: [checkin-service, alert-service, clinic-risk-service]
+    networks: [internal, public]
+
+  checkin-service:
+    <<: *node-service
+    build: ./services/checkin-service
+    environment:
+      PORT: 4001
+      SERVICE_NAME: checkin-service
+      DATABASE_URL: "postgres://checkin_user:${CHECKIN_DB_PASSWORD:-checkin_pass}@checkin-db:5432/checkin_db"
+      SEED_DEMO_DATA: "${SEED_DEMO_DATA:-true}"
+      INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN}"
+      ALERT_SERVICE_URL: http://alert-service:4002
+      CLINIC_SERVICE_URL: http://clinic-risk-service:4003
+    depends_on: { checkin-db: { condition: service_healthy } }
+
+  alert-service:
+    <<: *node-service
+    build: ./services/alert-service
+    environment:
+      PORT: 4002
+      SERVICE_NAME: alert-service
+      NODE_ENV: "${ALERT_NODE_ENV:-development}"   # development => SMS dry-run when Twilio is not configured
+      DATABASE_URL: "postgres://alert_user:${ALERT_DB_PASSWORD:-alert_pass}@alert-db:5432/alert_db"
+      SEED_DEMO_DATA: "${SEED_DEMO_DATA:-true}"
+      INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN}"
+      CHECKIN_SERVICE_URL: http://checkin-service:4001
+      CLINIC_SERVICE_URL: http://clinic-risk-service:4003
+      REDIS_URL: redis://redis:6379
+      OPENWEATHER_API_KEY: "${OPENWEATHER_API_KEY:-}"
+      OPENWEATHER_ONECALL_ENABLED: "${OPENWEATHER_ONECALL_ENABLED:-false}"
+      WEATHER_POLL_INTERVAL_MINUTES: "${WEATHER_POLL_INTERVAL_MINUTES:-30}"
+      HEAT_INDEX_THRESHOLD_C: "${HEAT_INDEX_THRESHOLD_C:-40}"
+      TWILIO_ACCOUNT_SID: "${TWILIO_ACCOUNT_SID:-}"
+      TWILIO_AUTH_TOKEN: "${TWILIO_AUTH_TOKEN:-}"
+      TWILIO_FROM_NUMBER: "${TWILIO_FROM_NUMBER:-}"
+      TWILIO_MESSAGING_SERVICE_SID: "${TWILIO_MESSAGING_SERVICE_SID:-}"
+      TWILIO_STATUS_CALLBACK_URL: "${TWILIO_STATUS_CALLBACK_URL:-}"
+      TWILIO_INBOUND_WEBHOOK_URL: "${TWILIO_INBOUND_WEBHOOK_URL:-}"
+      SMS_DRY_RUN: "${SMS_DRY_RUN:-true}"
+    depends_on:
+      alert-db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  clinic-risk-service:
+    <<: *node-service
+    build: ./services/clinic-risk-service
+    environment:
+      PORT: 4003
+      SERVICE_NAME: clinic-risk-service
+      DATABASE_URL: "postgres://clinic_user:${CLINIC_DB_PASSWORD:-clinic_pass}@clinic-db:5432/clinic_db"
+      INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN}"
+      LEGACY_ADAPTER_URL: http://legacy-emr-adapter:4004
+    depends_on: { clinic-db: { condition: service_healthy } }
+
+  legacy-emr-adapter:
+    <<: *node-service
+    build: ./services/legacy-emr-adapter
+    ports: ["4004:4004"]           # dev only - lets SoapUI hit /legacy/translate
+    environment:
+      PORT: 4004
+      SERVICE_NAME: legacy-emr-adapter
+      INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN}"
+      LEGACY_EMR_URL: "${LEGACY_EMR_URL:-http://mock-legacy-emr:4005/emr}"
+      LEGACY_EMR_USERNAME: "${LEGACY_EMR_USERNAME:-}"
+      LEGACY_EMR_PASSWORD: "${LEGACY_EMR_PASSWORD:-}"
+
+  mock-legacy-emr:
+    <<: *node-service
+    build: ./services/mock-legacy-emr
+    ports: ["4005:4005"]           # SoapUI target (WSDL at http://localhost:4005/emr?wsdl)
+    environment:
+      PORT: 4005
+      PUBLIC_URL: http://localhost:4005/emr
+      MOCK_EMR_DELAY_MS: "${MOCK_EMR_DELAY_MS:-0}"
+      MOCK_EMR_FAIL_RATE: "${MOCK_EMR_FAIL_RATE:-0}"
+
+networks:
+  internal: {}
+  public: {}
+
+volumes:
+  checkin-data: {}
+  alert-data: {}
+  clinic-data: {}
+  redis-data: {}

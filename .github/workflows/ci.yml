@@ -1,0 +1,72 @@
+# CI pipeline (Section 16 / 18): test every service on each push / pull request to main,
+# then verify every Docker image builds.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api-gateway, services/checkin-service, services/alert-service, services/clinic-risk-service, services/legacy-emr-adapter]
+    defaults:
+      run:
+        working-directory: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.service }}/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build all images
+        run: |
+          cp .env.example .env
+          docker compose build
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: docker-build
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start stack
+        run: |
+          cp .env.example .env
+          sed -i 's/^INTERNAL_SERVICE_TOKEN=.*/INTERNAL_SERVICE_TOKEN=ci-internal-token/' .env
+          docker compose up -d --build
+          for i in $(seq 1 40); do curl -sf http://localhost:8080/health && break; sleep 3; done
+          sleep 10
+      - name: Run Postman collection (Newman)
+        run: |
+          npx --yes newman run testing/postman/ElderCare_Connect.postman_collection.json \
+            -e testing/postman/ElderCare_Connect.local.postman_environment.json --bail
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs --tail=200

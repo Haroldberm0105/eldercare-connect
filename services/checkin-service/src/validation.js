@@ -1,0 +1,98 @@
+'use strict';
+
+/**
+ * Structured vitals validation (Section 9: "validates structured vitals input ... against basic
+ * range checks before storage"). Ranges reject physiologically impossible / typo values; they
+ * are NOT clinical alert thresholds (those live in anomaly.js).
+ *
+ * Pure function, no dependencies - unit tested in test/validation.test.js.
+ */
+const RANGES = {
+  systolic: [50, 300],
+  diastolic: [30, 200],
+  heartRate: [20, 250],
+  temperatureC: [30, 45],
+  spo2: [50, 100],
+  bloodGlucose: [20, 800],
+};
+const MOBILITY = ['normal', 'assisted', 'wheelchair', 'bedridden', 'fall_reported'];
+const MOOD = ['good', 'neutral', 'low', 'confused', 'agitated'];
+const MAX_NOTES = 2000;
+
+function isNum(v) {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/**
+ * @returns {{ ok: true, value: object } | { ok: false, errors: string[] }}
+ */
+function validateCheckin(body, now = new Date()) {
+  const errors = [];
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, errors: ['Body must be a JSON object'] };
+
+  const patientId = typeof body.patientId === 'string' ? body.patientId.trim() : '';
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(patientId)) errors.push('patientId is required (1-64 chars: letters, digits, _ or -)');
+
+  const v = body.vitals && typeof body.vitals === 'object' ? body.vitals : {};
+  const vitals = {};
+  for (const [field, [min, max]] of Object.entries(RANGES)) {
+    if (v[field] === undefined || v[field] === null) continue;
+    if (!isNum(v[field])) errors.push(`vitals.${field} must be a number`);
+    else if (v[field] < min || v[field] > max) errors.push(`vitals.${field} must be between ${min} and ${max}`);
+    else vitals[field] = field === 'temperatureC' ? Math.round(v[field] * 10) / 10 : Math.round(v[field]);
+  }
+  if ((vitals.systolic === undefined) !== (vitals.diastolic === undefined)) {
+    errors.push('vitals.systolic and vitals.diastolic must be provided together');
+  } else if (vitals.systolic !== undefined && vitals.diastolic >= vitals.systolic) {
+    errors.push('vitals.diastolic must be lower than vitals.systolic');
+  }
+
+  const med = body.medication || {};
+  if (med.taken !== undefined && typeof med.taken !== 'boolean') errors.push('medication.taken must be true or false');
+  const missed = med.missed === undefined ? [] : med.missed;
+  if (!Array.isArray(missed) || missed.some((m) => typeof m !== 'string' || m.length > 100)) {
+    errors.push('medication.missed must be an array of medication names');
+  }
+
+  if (body.mobilityStatus !== undefined && !MOBILITY.includes(body.mobilityStatus)) {
+    errors.push(`mobilityStatus must be one of: ${MOBILITY.join(', ')}`);
+  }
+  if (body.mood !== undefined && !MOOD.includes(body.mood)) errors.push(`mood must be one of: ${MOOD.join(', ')}`);
+  if (body.notes !== undefined && (typeof body.notes !== 'string' || body.notes.length > MAX_NOTES)) {
+    errors.push(`notes must be a string of at most ${MAX_NOTES} characters`);
+  }
+
+  let recordedAt = now;
+  if (body.recordedAt !== undefined) {
+    const d = new Date(body.recordedAt);
+    if (Number.isNaN(d.getTime())) errors.push('recordedAt must be an ISO-8601 timestamp');
+    else if (d.getTime() > now.getTime() + 5 * 60 * 1000) errors.push('recordedAt cannot be in the future');
+    else if (d.getTime() < now.getTime() - 7 * 24 * 3600 * 1000) errors.push('recordedAt cannot be older than 7 days');
+    else recordedAt = d;
+  }
+
+  if (body.idempotencyKey !== undefined && !/^[A-Za-z0-9_-]{8,100}$/.test(String(body.idempotencyKey))) {
+    errors.push('idempotencyKey must be 8-100 chars (letters, digits, _ or -)');
+  }
+
+  if (!Object.keys(vitals).length && med.taken === undefined && !body.mobilityStatus && !body.notes) {
+    errors.push('Provide at least one vital sign, medication status, mobility status or note');
+  }
+
+  if (errors.length) return { ok: false, errors };
+  return {
+    ok: true,
+    value: {
+      patientId,
+      vitals,
+      medication: { taken: med.taken, missed },
+      mobilityStatus: body.mobilityStatus || null,
+      mood: body.mood || null,
+      notes: body.notes ? body.notes.trim() : null,
+      recordedAt,
+      idempotencyKey: body.idempotencyKey ? String(body.idempotencyKey) : null,
+    },
+  };
+}
+
+module.exports = { validateCheckin, RANGES, MOBILITY, MOOD };

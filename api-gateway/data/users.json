@@ -1,0 +1,55 @@
+[
+  {
+    "id": "U-CG-001",
+    "username": "caregiver.maria",
+    "name": "Maria Santos",
+    "role": "caregiver",
+    "patients": [
+      "P-1001",
+      "P-1002"
+    ],
+    "scopes": [
+      "checkins:write",
+      "patients:read"
+    ],
+    "passwordHash": "scrypt$8a2472a4b922f16ccadf57459b9cf42f$1342f4c673073a02825b3a93e7af71001f03fe88e9146532e6f9e946435cec352e56e1c0426d887a0c4df1a8a829ff8d48ea554d5f2d9e2fefee74c4d17c2bde"
+  },
+  {
+    "id": "U-FM-001",
+    "username": "family.jose",
+    "name": "Jose Reyes",
+    "role": "family_member",
+    "patients": [
+      "P-1001"
+    ],
+    "scopes": [
+      "patients:read",
+      "alerts:read"
+    ],
+    "passwordHash": "scrypt$74311894fd5f5293f434ae52396ee134$e9c7614aae63d53db426524ec459bfaa7ae163c8f91800d82fbe8d133dab895553bc2efff66d331c9beb36ac84b8b87adc36d35c54ee136613154907123de0d2"
+  },
+  {
+    "id": "U-CS-001",
+    "username": "nurse.ana",
+    "name": "Ana Cruz, RN",
+    "role": "clinic_staff",
+    "patients": [],
+    "scopes": [
+      "clinic:read",
+      "clinic:write",
+      "alerts:dispatch"
+    ],
+    "passwordHash": "scrypt$1520c5b2d6e2cebad6b47a003f26e3ee$34e46c4c91441d558126c3483d1bd87da67605fec02081cebeafbd0e3761349d5f58da8384ee3b7f4298e2b865a9449d13d9b99a8499da93cebfb1f0761106a8"
+  },
+  {
+    "id": "U-AD-001",
+    "username": "admin.harold",
+    "name": "Harold Bermudez",
+    "role": "system_admin",
+    "patients": [],
+    "scopes": [
+      "admin"
+    ],
+    "passwordHash": "scrypt$afe6b9021337fab16efa196befb8963d$61bf767aa599288d49c4a35ee714a6ad0a2bc603f527a8fb874593e6fe0b480ca901592bd0afb326d8ca02e11004041f752846a41d0a6c46d383ba0e55d0c7f4"
+  }
+]

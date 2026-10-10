@@ -1,0 +1,69 @@
+# Cloud / production overrides for a single VM (AWS EC2, Azure VM, GCP Compute Engine).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d --build
+#
+# What changes vs. local docker-compose.yml:
+#   - databases, Redis, adapter and mock EMR are no longer published to the host (only the gateway is)
+#   - services run with NODE_ENV=production, restart always, and memory limits
+#   - demo seed data is off unless SEED_DEMO_DATA=true is set in .env
+#   - the gateway binds to 127.0.0.1 so it sits behind a TLS reverse proxy / load balancer
+#     (Caddy, Nginx, or the cloud's managed load balancer terminates HTTPS - Section 12, Risk 2)
+# Requires Docker Compose v2.24+ for the !reset / !override tags.
+
+x-prod: &prod
+  restart: always
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+services:
+  checkin-db:
+    <<: *prod
+    ports: !reset []
+  alert-db:
+    <<: *prod
+    ports: !reset []
+  clinic-db:
+    <<: *prod
+    ports: !reset []
+  redis:
+    <<: *prod
+
+  api-gateway:
+    <<: *prod
+    ports: !override ["127.0.0.1:8080:8080"]
+    environment:
+      NODE_ENV: production
+      RATE_LIMIT_MAX: "${RATE_LIMIT_MAX:-300}"
+    deploy: { resources: { limits: { memory: 256m } } }
+
+  checkin-service:
+    <<: *prod
+    environment:
+      NODE_ENV: production
+      SEED_DEMO_DATA: "${SEED_DEMO_DATA:-false}"
+    deploy: { resources: { limits: { memory: 256m } } }
+
+  alert-service:
+    <<: *prod
+    environment:
+      NODE_ENV: production
+      SEED_DEMO_DATA: "${SEED_DEMO_DATA:-false}"
+    deploy: { resources: { limits: { memory: 256m } } }
+
+  clinic-risk-service:
+    <<: *prod
+    environment:
+      NODE_ENV: production
+    deploy: { resources: { limits: { memory: 256m } } }
+
+  legacy-emr-adapter:
+    <<: *prod
+    ports: !reset []
+    environment:
+      NODE_ENV: production
+    deploy: { resources: { limits: { memory: 128m } } }
+
+  mock-legacy-emr:
+    <<: *prod
+    ports: !reset []

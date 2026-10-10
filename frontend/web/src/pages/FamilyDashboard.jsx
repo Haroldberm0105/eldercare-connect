@@ -1,0 +1,154 @@
+import React, { useCallback, useEffect, useState } from 'react';
+import { api } from '../api';
+import { PageHeader, SeverityBadge, Empty, ErrorNote, Loading, Chip } from '../components/ui';
+import TrendChart from '../components/TrendChart';
+import { conditionLabel, relTime, dateTime, age, vitalOf } from '../format';
+
+const PERIODS = [7, 30];
+
+function Reading({ label, value, unit, flagged }) {
+  return (
+    <div className={`reading ${flagged ? 'is-flagged' : ''}`}>
+      <span className="reading-label">{label}</span>
+      <span className="reading-value">{value ?? '–'}{value != null && unit && <small>{unit}</small>}</span>
+      {flagged && <span className="reading-flag">Outside usual range</span>}
+    </div>
+  );
+}
+
+function deliveryText(delivery = []) {
+  const sms = delivery.filter((d) => d.channel === 'sms');
+  if (!sms.length) return 'Shown in the app';
+  const sent = sms.filter((d) => ['sent', 'delivered', 'simulated'].includes(d.status)).length;
+  const failed = sms.filter((d) => ['failed', 'undelivered'].includes(d.status)).length;
+  if (failed) return `Text failed for ${failed} contact${failed === 1 ? '' : 's'}; shown in the app`;
+  if (sent === sms.length) return `Texted to ${sent} contact${sent === 1 ? '' : 's'}`;
+  return `Sending text to ${sms.length} contact${sms.length === 1 ? '' : 's'}`;
+}
+
+export default function FamilyDashboard({ user }) {
+  const [patientId, setPatientId] = useState(user.patients[0] || '');
+  const [days, setDays] = useState(30);
+  const [history, setHistory] = useState(null);
+  const [alerts, setAlerts] = useState(null);
+  const [error, setError] = useState('');
+  const [updatedAt, setUpdatedAt] = useState(null);
+
+  const load = useCallback(() => {
+    if (!patientId) return Promise.resolve();
+    return Promise.all([
+      api(`/api/patients/${patientId}/history?days=${days}&limit=200`),
+      api(`/api/alerts/notifications?patientId=${patientId}&limit=15`),
+    ]).then(([h, n]) => {
+      setHistory(h);
+      setAlerts(n.notifications);
+      setError('');
+      setUpdatedAt(new Date());
+    }).catch((e) => setError(e.message));
+  }, [patientId, days]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  if (!user.patients.length) return <Empty title="No family member linked yet">Ask the health center to link your account to your relative.</Empty>;
+  if (!history) return error ? <ErrorNote error={error} onRetry={load} /> : <Loading label="Loading your family member's health" />;
+
+  const p = history.patient;
+  const latest = history.checkins[0];
+  const flagged = new Set((latest ? latest.anomalies : []).map((a) => vitalOf(a.code)).filter(Boolean));
+  const chrono = [...history.checkins].reverse().map((c) => ({
+    t: c.recordedAt,
+    sys: c.vitals.systolic,
+    dia: c.vitals.diastolic,
+    hr: c.vitals.heartRate,
+    flag: c.severity === 'high' || c.severity === 'critical',
+  }));
+  const t = history.trends;
+
+  return (
+    <>
+      <PageHeader
+        title={p.fullName}
+        subtitle={[age(p.birthDate) && `${age(p.birthDate)} years old`, latest ? `last check-in ${relTime(latest.recordedAt)}` : 'no check-ins yet'].filter(Boolean).join(', ')}
+      >
+        {user.patients.length > 1 && (
+          <select value={patientId} onChange={(e) => { setPatientId(e.target.value); setHistory(null); }} aria-label="Family member">
+            {user.patients.map((id) => <option key={id}>{id}</option>)}
+          </select>
+        )}
+        <span className="muted small" aria-live="polite">{updatedAt ? `Updated ${relTime(updatedAt)}` : ''}</span>
+      </PageHeader>
+
+      {(p.conditions.length > 0 || p.mobilityRestricted) && (
+        <div className="chips-row">
+          {p.conditions.map((c) => <Chip key={c}>{conditionLabel(c)}</Chip>)}
+          {p.mobilityRestricted && <Chip tone="chip-warn">Limited mobility</Chip>}
+        </div>
+      )}
+      <ErrorNote error={error} onRetry={load} />
+
+      <section className={`panel latest ${latest ? `latest-${latest.severity}` : ''}`}>
+        <div className="panel-head">
+          <h2 className="panel-title">Latest reading</h2>
+          {latest && <span className="muted small">{dateTime(latest.recordedAt)} <SeverityBadge value={latest.severity} /></span>}
+        </div>
+        {latest ? (
+          <>
+            <div className="readings">
+              <Reading label="Blood pressure" value={latest.vitals.systolic ? `${latest.vitals.systolic}/${latest.vitals.diastolic}` : null} unit="mmHg" flagged={flagged.has('bp')} />
+              <Reading label="Heart rate" value={latest.vitals.heartRate} unit="bpm" flagged={flagged.has('hr')} />
+              <Reading label="Temperature" value={latest.vitals.temperatureC} unit="°C" flagged={flagged.has('temp')} />
+              <Reading label="Oxygen" value={latest.vitals.spo2} unit="%" flagged={flagged.has('spo2')} />
+            </div>
+            <p className="latest-meds">
+              {latest.medication.taken === false ? 'Medicines were missed in this check-in.' : 'Medicines taken.'}
+              {latest.notes ? ` Caregiver's note: "${latest.notes}"` : ''}
+            </p>
+          </>
+        ) : <Empty title="No check-ins yet">Readings appear here as soon as the caregiver records them.</Empty>}
+      </section>
+
+      <div className="layout-split layout-wide-left">
+        <section className="panel">
+          <div className="panel-head">
+            <h2 className="panel-title">Trends</h2>
+            <div className="tabs" role="group" aria-label="Period">
+              {PERIODS.map((d) => <button key={d} type="button" className={`tab ${days === d ? 'is-on' : ''}`} aria-pressed={days === d} onClick={() => setDays(d)}>{d} days</button>)}
+            </div>
+          </div>
+          <dl className="stats">
+            <div><dt>Check-ins</dt><dd>{t.totalCheckins}</dd></div>
+            <div><dt>Average blood pressure</dt><dd>{t.bloodPressure.avgSystolic ? `${t.bloodPressure.avgSystolic}/${t.bloodPressure.avgDiastolic}` : '–'}</dd></div>
+            <div><dt>Days with missed medicines</dt><dd>{t.missedMedicationDays}</dd></div>
+            <div><dt>Readings needing attention</dt><dd>{t.highSeverityCheckins}</dd></div>
+          </dl>
+          <h3 className="chart-title">Blood pressure</h3>
+          <TrendChart points={chrono} unit="mmHg" band={[90, 140]} label="Blood pressure trend"
+            series={[{ key: 'sys', label: 'Top number (systolic)', className: 's-primary' }, { key: 'dia', label: 'Bottom number (diastolic)', className: 's-secondary' }]} />
+          <h3 className="chart-title">Heart rate</h3>
+          <TrendChart points={chrono} unit="bpm" band={[60, 100]} label="Heart rate trend" series={[{ key: 'hr', label: 'Heart rate', className: 's-primary' }]} />
+        </section>
+
+        <section className="panel">
+          <h2 className="panel-title">Alerts</h2>
+          {alerts && alerts.length === 0 && <Empty title="No alerts">You'll get a text and see it here if a reading needs attention.</Empty>}
+          <ol className="timeline">
+            {(alerts || []).map((a) => (
+              <li key={a.id} className={`timeline-item sev-line-${a.severity}`}>
+                <div className="timeline-head">
+                  <strong>{a.title}</strong>
+                  <time className="muted small" dateTime={a.createdAt} title={dateTime(a.createdAt)}>{relTime(a.createdAt)}</time>
+                </div>
+                <p>{a.message}</p>
+                <span className="muted small">{deliveryText(a.delivery)}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      </div>
+    </>
+  );
+}

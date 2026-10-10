@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "ElderCare Caregiver",
+    "slug": "eldercare-caregiver",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "extra": {
+      "apiBaseUrl": "http://192.168.1.10:8080"
+    }
+  }
+}

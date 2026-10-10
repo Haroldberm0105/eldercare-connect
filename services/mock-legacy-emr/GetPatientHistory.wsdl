@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Legacy RHU Clinic EMR - SOAP 1.1 contract for GetPatientHistory.
+     Used by the mock server, the ElderCare Legacy EMR Adapter, and the SoapUI test project. -->
+<wsdl:definitions name="LegacyClinicEmr"
+    targetNamespace="http://rhu.health.gov.ph/emr/v1"
+    xmlns:tns="http://rhu.health.gov.ph/emr/v1"
+    xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+    xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+    xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+
+  <wsdl:types>
+    <xsd:schema targetNamespace="http://rhu.health.gov.ph/emr/v1" elementFormDefault="qualified">
+      <xsd:element name="GetPatientHistoryRequest">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="PatientId" type="xsd:string"/>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+
+      <xsd:complexType name="Diagnosis">
+        <xsd:sequence>
+          <xsd:element name="IcdCode" type="xsd:string"/>
+          <xsd:element name="Description" type="xsd:string"/>
+          <xsd:element name="DiagnosedOn" type="xsd:string"/>
+          <xsd:element name="Chronic" type="xsd:boolean"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:complexType name="Visit">
+        <xsd:sequence>
+          <xsd:element name="VisitId" type="xsd:string"/>
+          <xsd:element name="VisitDate" type="xsd:string"/>
+          <xsd:element name="VisitType" type="xsd:string"/>
+          <xsd:element name="Facility" type="xsd:string"/>
+          <xsd:element name="ChiefComplaint" type="xsd:string" minOccurs="0"/>
+          <xsd:element name="BloodPressure" type="xsd:string" minOccurs="0"/>
+          <xsd:element name="Remarks" type="xsd:string" minOccurs="0"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:complexType name="Medication">
+        <xsd:sequence>
+          <xsd:element name="DrugName" type="xsd:string"/>
+          <xsd:element name="Dosage" type="xsd:string"/>
+          <xsd:element name="Frequency" type="xsd:string"/>
+          <xsd:element name="Active" type="xsd:boolean"/>
+        </xsd:sequence>
+      </xsd:complexType>
+
+      <xsd:element name="GetPatientHistoryResponse">
+        <xsd:complexType>
+          <xsd:sequence>
+            <xsd:element name="PatientHistory">
+              <xsd:complexType>
+                <xsd:sequence>
+                  <xsd:element name="PatientId" type="xsd:string"/>
+                  <xsd:element name="FacilityCode" type="xsd:string"/>
+                  <xsd:element name="FullName" type="xsd:string"/>
+                  <xsd:element name="BirthDate" type="xsd:string"/>
+                  <xsd:element name="Sex" type="xsd:string"/>
+                  <xsd:element name="Diagnoses"><xsd:complexType><xsd:sequence>
+                    <xsd:element name="Diagnosis" type="tns:Diagnosis" minOccurs="0" maxOccurs="unbounded"/>
+                  </xsd:sequence></xsd:complexType></xsd:element>
+                  <xsd:element name="Visits"><xsd:complexType><xsd:sequence>
+                    <xsd:element name="Visit" type="tns:Visit" minOccurs="0" maxOccurs="unbounded"/>
+                  </xsd:sequence></xsd:complexType></xsd:element>
+                  <xsd:element name="Medications"><xsd:complexType><xsd:sequence>
+                    <xsd:element name="Medication" type="tns:Medication" minOccurs="0" maxOccurs="unbounded"/>
+                  </xsd:sequence></xsd:complexType></xsd:element>
+                  <xsd:element name="Allergies"><xsd:complexType><xsd:sequence>
+                    <xsd:element name="Allergy" type="xsd:string" minOccurs="0" maxOccurs="unbounded"/>
+                  </xsd:sequence></xsd:complexType></xsd:element>
+                </xsd:sequence>
+              </xsd:complexType>
+            </xsd:element>
+          </xsd:sequence>
+        </xsd:complexType>
+      </xsd:element>
+    </xsd:schema>
+  </wsdl:types>
+
+  <wsdl:message name="GetPatientHistoryInput">
+    <wsdl:part name="parameters" element="tns:GetPatientHistoryRequest"/>
+  </wsdl:message>
+  <wsdl:message name="GetPatientHistoryOutput">
+    <wsdl:part name="parameters" element="tns:GetPatientHistoryResponse"/>
+  </wsdl:message>
+
+  <wsdl:portType name="LegacyClinicEmrPortType">
+    <wsdl:operation name="GetPatientHistory">
+      <wsdl:input message="tns:GetPatientHistoryInput"/>
+      <wsdl:output message="tns:GetPatientHistoryOutput"/>
+    </wsdl:operation>
+  </wsdl:portType>
+
+  <wsdl:binding name="LegacyClinicEmrSoapBinding" type="tns:LegacyClinicEmrPortType">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="GetPatientHistory">
+      <soap:operation soapAction="http://rhu.health.gov.ph/emr/v1/GetPatientHistory"/>
+      <wsdl:input><soap:body use="literal"/></wsdl:input>
+      <wsdl:output><soap:body use="literal"/></wsdl:output>
+    </wsdl:operation>
+  </wsdl:binding>
+
+  <wsdl:service name="LegacyClinicEmrService">
+    <wsdl:port name="LegacyClinicEmrPort" binding="tns:LegacyClinicEmrSoapBinding">
+      <soap:address location="http://localhost:4005/emr"/>
+    </wsdl:port>
+  </wsdl:service>
+</wsdl:definitions>

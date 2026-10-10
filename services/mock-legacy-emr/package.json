@@ -1,0 +1,8 @@
+{
+  "name": "eldercare-mock-legacy-emr",
+  "version": "1.0.0",
+  "description": "Mock SOAP 1.1 Legacy Clinic EMR for development and SoapUI testing (no dependencies)",
+  "main": "server.js",
+  "private": true,
+  "scripts": { "start": "node server.js" }
+}
