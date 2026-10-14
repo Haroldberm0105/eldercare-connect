@@ -67,6 +67,13 @@ jobs:
         run: |
           npx --yes newman run testing/postman/ElderCare_Connect.postman_collection.json \
             -e testing/postman/ElderCare_Connect.local.postman_environment.json --bail
+      # End-to-end flows: triage de-escalation on normal vitals, visit scheduling, Recent visits,
+      # case history, medicines, onboarding, RBAC. SMS stays in dry-run (no TextBee secrets in CI).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: End-to-end smoke test
+        run: node testing/e2e-smoke.mjs
       - name: Logs on failure
         if: failure()
         run: docker compose logs --tail=200

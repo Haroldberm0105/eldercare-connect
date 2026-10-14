@@ -34,11 +34,38 @@ function totalScore({ health = 0, environment = 0, emr = 0, conditions = [], mob
   return Math.min(100, Math.round(base + compounding + vulnerabilityBonus(conditions, mobilityRestricted) + Math.min(10, emr)));
 }
 
+/**
+ * Explicit triage thresholds (documented in README section "Triage rules").
+ *
+ *   ROUTINE (P4)  latest check-in is normal (health severity score = 0) AND no active weather risk
+ *                 (environment score = 0), regardless of EMR history. Also any case whose total < 35.
+ *   URGENT  (P1)  latest check-in has a critical finding (health score >= 85: hypertensive crisis,
+ *                 SpO2 < 90 %, fall, or several high findings at once) OR total >= 85.
+ *   HIGH    (P2)  total 65-84      WATCH (P3)  total 35-64
+ */
+const THRESHOLDS = Object.freeze({ urgentHealth: 85, urgent: 85, high: 65, watch: 35 });
+const CATEGORY = Object.freeze({ P1: 'urgent', P2: 'high', P3: 'watch', P4: 'routine' });
+
 function priorityFor(score) {
-  if (score >= 85) return 'P1';
-  if (score >= 65) return 'P2';
-  if (score >= 40) return 'P3';
+  if (score >= THRESHOLDS.urgent) return 'P1';
+  if (score >= THRESHOLDS.high) return 'P2';
+  if (score >= THRESHOLDS.watch) return 'P3';
   return 'P4';
+}
+
+/** @returns {{ total:number, priority:'P1'|'P2'|'P3'|'P4', category:string, rule:string }} */
+function classify(signals) {
+  const health = signals.health || 0;
+  const environment = signals.environment || 0;
+  const total = totalScore(signals);
+  const out = (priority, rule) => ({ total, priority, category: CATEGORY[priority], rule });
+
+  if (health === 0 && environment === 0) return out('P4', 'Routine: latest vitals normal (severity score 0) and no active weather risk');
+  if (health >= THRESHOLDS.urgentHealth) return out('P1', `Urgent: critical finding in latest check-in (health score ${health} >= ${THRESHOLDS.urgentHealth})`);
+  const p = priorityFor(total);
+  const band = { P1: `>= ${THRESHOLDS.urgent}`, P2: `${THRESHOLDS.high}-${THRESHOLDS.urgent - 1}`, P3: `${THRESHOLDS.watch}-${THRESHOLDS.high - 1}`, P4: `< ${THRESHOLDS.watch}` }[p];
+  const label = { P1: 'Urgent', P2: 'High', P3: 'Watch', P4: 'Routine' }[p];
+  return out(p, `${label}: combined risk score ${total} (${band})`);
 }
 
 /** 0..10 risk boost from a normalised legacy EMR history (see legacy adapter JSON contract). */
@@ -58,4 +85,4 @@ const VALID_TRANSITIONS = {
   dismissed: [],
 };
 
-module.exports = { environmentScore, vulnerabilityBonus, totalScore, priorityFor, emrScore, VALID_TRANSITIONS, HIGH_RISK_CONDITIONS };
+module.exports = { environmentScore, vulnerabilityBonus, totalScore, priorityFor, classify, emrScore, VALID_TRANSITIONS, HIGH_RISK_CONDITIONS, THRESHOLDS, CATEGORY };

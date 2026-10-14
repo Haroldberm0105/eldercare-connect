@@ -70,3 +70,30 @@ CREATE TABLE IF NOT EXISTS missed_checkin_flags (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (patient_id, flag_date)
 );
+
+-- ------------------------------------------------------------------------------------------
+-- v1.1: patient onboarding + prescribed medications (all statements idempotent for upgrades)
+-- ------------------------------------------------------------------------------------------
+CREATE SEQUENCE IF NOT EXISTS patient_id_seq START 1004;
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS sex               TEXT;
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS emergency_contact JSONB NOT NULL DEFAULT '{}';
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS notes             TEXT;
+ALTER TABLE patients ADD COLUMN IF NOT EXISTS created_by        TEXT;
+
+CREATE TABLE IF NOT EXISTS patient_medications (
+  id             SERIAL PRIMARY KEY,
+  patient_id     TEXT        NOT NULL REFERENCES patients(id),
+  name           TEXT        NOT NULL,
+  dosage         TEXT        NOT NULL,
+  frequency      TEXT        NOT NULL,
+  times          TEXT[]      NOT NULL DEFAULT '{}',   -- e.g. {08:00,20:00}
+  instructions   TEXT,
+  prescribed_by  TEXT,
+  start_date     DATE        NOT NULL DEFAULT current_date,
+  end_date       DATE,
+  active         BOOLEAN     NOT NULL DEFAULT TRUE,
+  created_by     TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_patient_medications_patient ON patient_medications (patient_id, active);

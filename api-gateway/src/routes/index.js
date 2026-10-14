@@ -17,6 +17,16 @@
  * | POST   | /api/alerts/weather-check           | clinic, admin                       | Family Alert & Notif.  |
  * | PATCH  | /api/clinic/queue/:itemId           | clinic                              | Clinic Risk Queue      |
  * | GET    | /api/clinic/patients/:id/emr-history| clinic, admin                       | Clinic Risk Queue      |
+ * v1.1 additions:
+ * | GET/POST | /api/patients                     | clinic, admin                       | Daily Check-In Logger  |
+ * | GET    | /api/patients/:id/medications       | caregiver, family (own), clinic, admin | Daily Check-In Logger |
+ * | POST/PATCH | /api/patients/:id/medications[/:medId] | clinic                     | Daily Check-In Logger  |
+ * | GET    | /api/patients/:id/visits            | caregiver, family (own), clinic, admin | Clinic Risk Queue   |
+ * | GET    | /api/clinic/queue/history           | clinic, admin                       | Clinic Risk Queue      |
+ * | POST   | /api/clinic/queue/:itemId/visits    | clinic                              | Clinic Risk Queue      |
+ * | GET    | /api/clinic/visits                  | clinic, admin                       | Clinic Risk Queue      |
+ * | PATCH  | /api/clinic/visits/:visitId         | clinic                              | Clinic Risk Queue      |
+ * | GET/POST/DELETE | /api/alerts/subscribers    | clinic, admin                       | Family Alert & Notif.  |
  */
 const express = require('express');
 const { authenticate } = require('../middleware/authMiddleware');
@@ -45,6 +55,31 @@ router.get(
   forwardTo('checkin'),
 );
 
+// Patient onboarding + list (clinic staff / admin)
+router.get('/patients', authorize(ROLES.CLINIC, ROLES.ADMIN), forwardTo('checkin'));
+router.post('/patients', authorize(ROLES.CLINIC, ROLES.ADMIN), forwardTo('checkin'));
+
+// Prescribed medications: caregivers / family see their own patients; clinic staff prescribe
+router.get(
+  '/patients/:id/medications',
+  authorize(ROLES.CAREGIVER, ROLES.FAMILY, ROLES.CLINIC, ROLES.ADMIN),
+  requirePatientAccess('id'),
+  forwardTo('checkin'),
+);
+router.post('/patients/:id/medications', authorize(ROLES.CLINIC), forwardTo('checkin'));
+router.patch('/patients/:id/medications/:medId', authorize(ROLES.CLINIC), forwardTo('checkin'));
+
+// A patient's scheduled / recent visits, readable by their caregiver and family too
+router.get(
+  '/patients/:id/visits',
+  authorize(ROLES.CAREGIVER, ROLES.FAMILY, ROLES.CLINIC, ROLES.ADMIN),
+  requirePatientAccess('id'),
+  forwardTo('clinic', (req) => {
+    const view = ['upcoming', 'recent', 'all'].includes(req.query.view) ? req.query.view : 'upcoming';
+    return `/api/clinic/visits?patientId=${encodeURIComponent(req.params.id)}&view=${view}`;
+  }),
+);
+
 router.get(
   '/patients/:id',
   authorize(ROLES.CAREGIVER, ROLES.FAMILY, ROLES.CLINIC, ROLES.ADMIN),
@@ -66,6 +101,11 @@ router.post(
   forwardTo('alert'), // runs the OpenWeatherMap x patient-profile mashup on demand
 );
 
+// SMS contacts per patient (who receives alerts)
+router.get('/alerts/subscribers', authorize(ROLES.CLINIC, ROLES.ADMIN), forwardTo('alert'));
+router.post('/alerts/subscribers', authorize(ROLES.CLINIC, ROLES.ADMIN), forwardTo('alert'));
+router.delete('/alerts/subscribers/:id', authorize(ROLES.CLINIC, ROLES.ADMIN), forwardTo('alert'));
+
 router.get(
   '/alerts/notifications',
   authorize(ROLES.FAMILY, ROLES.CAREGIVER),
@@ -79,6 +119,14 @@ router.get(
   authorize(ROLES.CLINIC, ROLES.ADMIN),
   forwardTo('clinic'),
 );
+
+// Resolved / dismissed case history
+router.get('/clinic/queue/history', authorize(ROLES.CLINIC, ROLES.ADMIN), forwardTo('clinic'));
+
+// Visits: schedule for a case, list upcoming / recent, complete / cancel
+router.post('/clinic/queue/:itemId/visits', authorize(ROLES.CLINIC), forwardTo('clinic'));
+router.get('/clinic/visits', authorize(ROLES.CLINIC, ROLES.ADMIN), forwardTo('clinic'));
+router.patch('/clinic/visits/:visitId', authorize(ROLES.CLINIC), forwardTo('clinic'));
 
 router.patch(
   '/clinic/queue/:itemId',

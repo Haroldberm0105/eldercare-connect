@@ -9,6 +9,13 @@ process.env.JWT_SECRET = 'test-access-secret-0123456789abcdef0123';
 process.env.JWT_REFRESH_SECRET = 'test-refresh-secret-0123456789abcdef012';
 process.env.INTERNAL_SERVICE_TOKEN = 'test-internal-token';
 process.env.LOG_LEVEL = 'error';
+// Work on a temporary copy of the users file: some tests change patient assignments.
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const tmpUsers = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ec-users-')), 'users.json');
+fs.copyFileSync(path.join(__dirname, '..', 'data', 'users.json'), tmpUsers);
+process.env.USERS_FILE = tmpUsers;
 
 // Fake upstream that echoes what the gateway forwarded.
 const upstream = express();
@@ -135,4 +142,46 @@ test('admin can list users without password hashes; nurse cannot', async () => {
   assert.ok(r.body.users.every((u) => !('passwordHash' in u)));
   const nurse = await login('nurse.ana');
   assert.strictEqual((await call('GET', '/api/admin/users', { token: nurse.access_token })).status, 403);
+});
+
+test('clinic staff can list caregivers; family members cannot use the directory', async () => {
+  const nurse = await login('nurse.ana');
+  const r = await call('GET', '/api/directory/users?role=caregiver', { token: nurse.access_token });
+  assert.strictEqual(r.status, 200);
+  assert.ok(r.body.users.length >= 1 && r.body.users.every((u) => u.role === 'caregiver' && !('passwordHash' in u)));
+  const fam = await login('family.jose');
+  assert.strictEqual((await call('GET', '/api/directory/users', { token: fam.access_token })).status, 403);
+});
+
+test('assigning a new patient to a caregiver takes effect at next sign-in', async () => {
+  const nurse = await login('nurse.ana');
+  const r = await call('PUT', '/api/directory/users/U-CG-001/patients', { token: nurse.access_token, body: { add: ['P-1004'] } });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.user.patients.includes('P-1004'));
+  const cg = await login('caregiver.maria');
+  const ok = await call('GET', '/api/patients/P-1004/medications', { token: cg.access_token });
+  assert.strictEqual(ok.status, 200);
+  const bad = await call('PUT', '/api/directory/users/U-CS-001/patients', { token: nurse.access_token, body: { add: ['P-1004'] } });
+  assert.strictEqual(bad.status, 422); // clinic staff are not patient-scoped
+});
+
+test('new v1.1 routes enforce roles', async () => {
+  const cg = await login('caregiver.maria');
+  const fam = await login('family.jose');
+  const nurse = await login('nurse.ana');
+  assert.strictEqual((await call('POST', '/api/patients', { token: cg.access_token, body: {} })).status, 403);
+  assert.strictEqual((await call('GET', '/api/clinic/queue/history', { token: fam.access_token })).status, 403);
+  assert.strictEqual((await call('GET', '/api/patients/P-1002/visits', { token: fam.access_token })).status, 403);
+  const v = await call('GET', '/api/patients/P-1001/visits?view=recent', { token: fam.access_token });
+  assert.strictEqual(v.status, 200);
+  assert.strictEqual(v.body.path, '/api/clinic/visits?patientId=P-1001&view=recent');
+  assert.strictEqual((await call('POST', '/api/clinic/queue/x/visits', { token: nurse.access_token, body: {} })).status, 200);
+});
+
+test('webhook bodies are forwarded byte-for-byte (needed for TextBee signatures)', async () => {
+  const raw = '{"webhookEvent":"MESSAGE_RECEIVED",   "message":"HELP"}';
+  const res = await fetch(`${base}/webhooks/textbee`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-signature': 'abc' }, body: raw });
+  const body = await res.json();
+  assert.strictEqual(body.headers['content-length'], String(Buffer.byteLength(raw)));
+  assert.strictEqual(body.headers['x-signature'], 'abc');
 });

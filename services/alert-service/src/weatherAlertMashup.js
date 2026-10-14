@@ -141,7 +141,7 @@ function stormMessage(patient, reasons) {
 /**
  * Dispatches the dehydration / heat warning to the patient's caregivers and family.
  * notifier.dispatchAlert() writes the in-app alert, then enqueues one job per subscriber;
- * the queue worker calls twilioClient.sendSms() -> client.messages.create() (Twilio Programmable Messaging).
+ * the queue worker calls smsSender.sendSms() -> TextBee (your Android phone) or Twilio, per SMS_PROVIDER.
  */
 async function sendHeatWarningSms(patient, profile) {
   // eslint-disable-next-line global-require
@@ -292,9 +292,9 @@ if (require.main === module) {
     const to = arg('send-to');
     if (exceeded && to) {
       // eslint-disable-next-line global-require
-      const { sendSms } = require('./twilioClient');
+      const { sendSms } = require('./smsSender');
       const result = await sendSms({ to, body: `[ElderCare Connect] ${heatMessage({ fullName: 'your elderly family member', zipCode: zip }, profile)}` });
-      console.log('Twilio result:', result);
+      console.log('SMS result:', result);
     } else if (to) {
       console.log(`Heat index ${profile.heatIndexC}C is not above ${threshold}C - no SMS sent.`);
     }

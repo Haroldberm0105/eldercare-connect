@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { PageHeader, SeverityBadge, Empty, ErrorNote, Loading, Chip } from '../components/ui';
 import TrendChart from '../components/TrendChart';
-import { conditionLabel, relTime, dateTime, age, vitalOf } from '../format';
+import { conditionLabel, relTime, dateTime, age, vitalOf, visitWhen, VISIT_TYPE_LABEL } from '../format';
 
 const PERIODS = [7, 30];
 
@@ -19,11 +19,21 @@ function Reading({ label, value, unit, flagged }) {
 function deliveryText(delivery = []) {
   const sms = delivery.filter((d) => d.channel === 'sms');
   if (!sms.length) return 'Shown in the app';
-  const sent = sms.filter((d) => ['sent', 'delivered', 'simulated'].includes(d.status)).length;
+  const n = (k, word = 'contact') => `${k} ${word}${k === 1 ? '' : 's'}`;
+  const real = sms.filter((d) => ['sent', 'delivered'].includes(d.status)).length;
+  const simulated = sms.filter((d) => d.status === 'simulated').length;
   const failed = sms.filter((d) => ['failed', 'undelivered'].includes(d.status)).length;
-  if (failed) return `Text failed for ${failed} contact${failed === 1 ? '' : 's'}; shown in the app`;
-  if (sent === sms.length) return `Texted to ${sent} contact${sent === 1 ? '' : 's'}`;
-  return `Sending text to ${sms.length} contact${sms.length === 1 ? '' : 's'}`;
+  const skipped = sms.filter((d) => d.status === 'skipped').length;
+  const pending = sms.length - real - simulated - failed - skipped;
+  const parts = [];
+  if (real) parts.push(`Texted to ${n(real)}`);
+  if (pending) parts.push(`sending to ${n(pending)}`);
+  if (failed) parts.push(`text failed for ${n(failed)}`);
+  if (skipped) parts.push(`${n(skipped, 'text')} held back (daily limit)`);
+  if (simulated) parts.push(`${simulated} simulated (test number${simulated === 1 ? '' : 's'})`);
+  const text = parts.join('; ');
+  const out = text.charAt(0).toUpperCase() + text.slice(1);
+  return failed || skipped ? `${out}; shown in the app` : out;
 }
 
 export default function FamilyDashboard({ user }) {
@@ -33,6 +43,15 @@ export default function FamilyDashboard({ user }) {
   const [alerts, setAlerts] = useState(null);
   const [error, setError] = useState('');
   const [updatedAt, setUpdatedAt] = useState(null);
+  const [extra, setExtra] = useState({ meds: [], visits: [] });
+
+  useEffect(() => {
+    if (!patientId) return;
+    Promise.all([
+      api(`/api/patients/${patientId}/medications`).catch(() => ({ medications: [] })),
+      api(`/api/patients/${patientId}/visits?view=upcoming`).catch(() => ({ visits: [] })),
+    ]).then(([m, v]) => setExtra({ meds: m.medications, visits: v.visits }));
+  }, [patientId]);
 
   const load = useCallback(() => {
     if (!patientId) return Promise.resolve();
@@ -132,6 +151,14 @@ export default function FamilyDashboard({ user }) {
           <TrendChart points={chrono} unit="bpm" band={[60, 100]} label="Heart rate trend" series={[{ key: 'hr', label: 'Heart rate', className: 's-primary' }]} />
         </section>
 
+        <div className="stack">
+        {extra.visits.length > 0 && (
+          <section className="panel visit-banner">
+            <h2 className="panel-title">Next health center visit</h2>
+            <p className="big-line">{visitWhen(extra.visits[0])}</p>
+            <p>{VISIT_TYPE_LABEL[extra.visits[0].visitType]}: {extra.visits[0].destination}</p>
+          </section>
+        )}
         <section className="panel">
           <h2 className="panel-title">Alerts</h2>
           {alerts && alerts.length === 0 && <Empty title="No alerts">You'll get a text and see it here if a reading needs attention.</Empty>}
@@ -148,6 +175,17 @@ export default function FamilyDashboard({ user }) {
             ))}
           </ol>
         </section>
+        {extra.meds.length > 0 && (
+          <section className="panel">
+            <h2 className="panel-title">Prescribed medicines</h2>
+            <ul className="med-list">
+              {extra.meds.map((m) => (
+                <li key={m.id}><div><strong>{m.name}</strong> {m.dosage}<br /><span className="muted small">{m.frequency}{m.times.length ? ` at ${m.times.join(', ')}` : ''}</span></div></li>
+              ))}
+            </ul>
+          </section>
+        )}
+        </div>
       </div>
     </>
   );

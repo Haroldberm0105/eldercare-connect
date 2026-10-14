@@ -184,6 +184,19 @@ All `/api/*` routes need `Authorization: Bearer <access_token>`.
 | GET | `/api/clinic/patients/:id/emr-history` | clinic, admin | Clinic → Adapter → SOAP EMR | translated legacy history; boosts risk score |
 | GET | `/api/admin/health` | admin | gateway | health of every service + circuit breakers |
 | GET | `/api/admin/users` | admin | gateway | user accounts and roles (never password hashes) |
+| GET | `/api/patients?search=&limit=` | clinic, admin | Check-In | patient list for the clinic (with last check-in) |
+| POST | `/api/patients` | clinic, admin | Check-In | **onboard a patient** (+ optional medicines); 422 field errors, 409 duplicate name + birth date |
+| GET | `/api/patients/:id/medications?includeInactive=` | caregiver, family (own), clinic, admin | Check-In | **prescribed medicines** + today's dose schedule |
+| POST / PATCH | `/api/patients/:id/medications[/:medId]` | clinic | Check-In | prescribe / change / stop (`active:false`) |
+| GET | `/api/patients/:id/visits?view=upcoming\|recent\|all` | caregiver, family (own), clinic, admin | Clinic | visits for one patient |
+| POST | `/api/clinic/queue/:itemId/visits` | clinic | Clinic | **schedule a visit** `{visitType, visitDate, visitTime, destination, location, contactPhone?, notes?}` |
+| PATCH | `/api/clinic/visits/:visitId` | clinic | Clinic | `{status: completed\|cancelled\|no_show, outcome?, resolveCase?}` |
+| GET | `/api/clinic/visits?view=upcoming\|recent&days=30` | clinic, admin | Clinic | visit board / **Recent Visits** |
+| GET | `/api/clinic/queue/history?patientId=&outcome=&from=&to=` | clinic, admin | Clinic | **resolved / dismissed cases** with follow-ups and visits |
+| GET | `/api/directory/users?role=` | clinic, admin | gateway | caregiver/family accounts for assignment |
+| PUT | `/api/directory/users/:userId/patients` | clinic, admin | gateway | `{add:[], remove:[]}` link patients to an account |
+| GET / POST / DELETE | `/api/alerts/subscribers` | clinic, admin | Alert | SMS alert contacts per patient; shows whether real SMS is live |
+| POST | `/webhooks/textbee` | TextBee (HMAC-verified) | Alert | delivery receipts + inbound SMS check-ins |
 | POST | `/webhooks/twilio/status` | Twilio (signature-verified) | Alert | SMS delivery receipts |
 | POST | `/webhooks/twilio/inbound` | Twilio (signature-verified) | Alert → Check-In | **SMS check-in** for caregivers without internet: `CHECKIN P-1001 BP 150/90 HR 80 MED Y` |
 
@@ -203,6 +216,32 @@ Example check-in body:
 
 Errors are JSON: `{ "error": "<code>", "message": "..." }` (+ `details[]` for 422, `requestId` for 5xx).
 Every response carries `X-Request-Id`, which appears in every service's structured logs.
+
+---
+
+### Triage rules (Routine vs Urgent)
+
+Every queue item gets a total score (0–100) from health (latest check-in), environment (weather) and clinic records (EMR), then a priority:
+
+| Priority | Category | Rule (first match wins) |
+|---|---|---|
+| P4 | Routine | health score **= 0** and environment score **= 0** (normal vitals, no weather risk) |
+| P1 | Urgent | health score **≥ 85** (critical vitals), whatever the total |
+| P1 | Urgent | total **≥ 85** |
+| P2 | High | total **65–84** |
+| P3 | Watch | total **35–64** |
+| P4 | Routine | total **< 35** |
+
+* A **normal check-in** (no anomalies) publishes `checkin.normal`; the clinic service sets the health score of the patient's open case to 0 and re-classifies it (this fixes "patient stays URGENT after normal vitals"). It never opens a new case.
+* Out-of-order events are ignored: an older check-in cannot overwrite a newer one (`health_at`).
+* Weather risk expires after `ENV_RISK_TTL_HOURS` (24 h) without a new weather event.
+* The queue is sorted by priority, then total score; `GET /api/clinic/queue` returns the thresholds.
+
+### Visits and Recent Visits
+
+* "Schedule visit" opens a form; the API validates a real date, `HH:MM` time (Manila), visit type, destination (2–120 chars) and location (3–300 chars). Not in the past, at most 180 days ahead, home/clinic visits between 06:00 and 19:59. Setting a case to `scheduled` without a visit is rejected (422).
+* **Recent Visits trigger:** a visit appears under Recent Visits when a nurse marks it **completed** (`PATCH /api/clinic/visits/:id {status:"completed"}`); it stays there for `RECENT_VISIT_DAYS` (30). `completed + resolveCase:true` also resolves the case; `no_show`/`cancelled` re-open it.
+* **Case history:** resolving or dismissing a case stores `resolved_at`, `resolved_by`, `resolution_notes`; `GET /api/clinic/queue/history` lists them with their follow-ups and visits.
 
 ---
 
@@ -240,6 +279,34 @@ OPENWEATHER_API_KEY=xxx TWILIO_ACCOUNT_SID=AC... TWILIO_AUTH_TOKEN=... TWILIO_FR
 
 ---
 
+## 6b. SMS via TextBee
+
+TextBee turns an Android phone into the SMS gateway. The alert service sends:
+
+```http
+POST https://api.textbee.dev/api/v1/gateway/send-sms
+x-api-key: <TEXTBEE_API_KEY>
+Content-Type: application/json
+
+{ "deviceId": "<TEXTBEE_DEVICE_ID>", "recipients": ["+639171234567"], "message": "[ElderCare Connect] ALERT for ..." }
+```
+
+(`src/textbeeClient.js`, used by the BullMQ SMS queue with retries; 4xx except 408/429 are not retried.)
+
+Setup (`services/alert-service/.env`, never commit it):
+```
+SMS_PROVIDER=textbee
+TEXTBEE_API_KEY=<from textbee.dev dashboard>
+TEXTBEE_DEVICE_ID=<your device id>
+SMS_DRY_RUN=false
+SMS_RECIPIENT_ALLOWLIST=+63917XXXXXXX     # your own number(s) while testing
+```
+Safety: the demo contacts (+63917555010x) are not real people's phones, so outside `NODE_ENV=production` only allow-listed numbers receive real texts; everything else is logged as *Simulated*. `SMS_DAILY_LIMIT` stops sending before the free-plan cap. The clinic profile page shows the current mode under **SMS alert contacts**.
+
+Optional webhook (delivery receipts + caregivers replying by SMS): in the TextBee dashboard add `https://<public gateway>/webhooks/textbee` with a secret and put the same value in `TEXTBEE_WEBHOOK_SECRET`.
+
+---
+
 ## 7. Failure handling
 
 | Failure | Behaviour |
@@ -262,11 +329,13 @@ Slow EMR: `MOCK_EMR_DELAY_MS=8000 docker compose up -d mock-legacy-emr`.
 
 | Layer | Tool | Asset |
 |---|---|---|
-| Unit | `node --test` | `*/test/*.test.js` – 38 tests: vitals validation, anomaly rules, heat index, risk scoring, SMS parsing, EMR mapping, gateway auth/RBAC |
-| End-to-end smoke | Node script | `testing/e2e-smoke.mjs` (`npm run smoke`) – 21 checks through the gateway |
+| Unit | `node --test` | `*/test/*.test.js` – 60 tests: vitals + patient validation, anomaly rules, heat index, triage thresholds, visit validation, TextBee client + webhook signature, SMS parsing, EMR mapping, gateway auth/RBAC |
+| End-to-end smoke | Node script | `testing/e2e-smoke.mjs` (`npm run smoke`) – 41 checks through the gateway (incl. triage de-escalation, visits, history, medicines, onboarding) |
 | Weather demo / failure | fake OpenWeatherMap | `testing/mocks/fake-openweathermap.js` – heatwave + typhoon on demand, no API key |
 | Functional + security | Postman | `testing/postman/ElderCare_Connect.postman_collection.json` (folders 0–4) |
 | Integration (saga) | Postman / Newman | folder **5. Integration** – check-in → family alert → clinic queue → EMR history → triage update |
+| v1.1 features | Postman / Newman | folder **6. v1.1** – normal vitals de-escalate, schedule/complete visit, Recent Visits, case history, medicines, onboarding |
+| SMS without a phone | fake TextBee | `testing/mocks/fake-textbee.js` – accepts `x-api-key: test-key`, `GET /__sent` lists messages |
 | Legacy SOAP | SoapUI | `testing/soapui/ElderCare_Legacy_EMR-soapui-project.xml` |
 | Load / stress | JMeter | `testing/jmeter/ElderCare_Connect_Load_Stress.jmx` |
 
@@ -284,10 +353,16 @@ Every service has a `.env.example`. Most important:
 | `INTERNAL_SERVICE_TOKEN` | all | gateway ↔ service trust (same value everywhere) |
 | `DATABASE_URL` | checkin, alert, clinic | own PostgreSQL database |
 | `OPENWEATHER_API_KEY` | alert | weather mashup |
-| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` / `TWILIO_MESSAGING_SERVICE_SID` | alert | SMS |
+| `SMS_PROVIDER` | alert | `textbee`, `twilio` or `none` (empty = auto) |
+| `TEXTBEE_API_KEY`, `TEXTBEE_DEVICE_ID` | alert | TextBee SMS gateway (Android phone) |
+| `TEXTBEE_WEBHOOK_SECRET` | alert | verifies `/webhooks/textbee` (HMAC-SHA256 of the raw body, `X-Signature`) |
+| `SMS_RECIPIENT_ALLOWLIST` | alert | numbers that may get **real** texts; empty outside production = all simulated |
+| `SMS_DAILY_LIMIT` | alert | real SMS per day (default 40; TextBee free plan is 50/day) |
+| `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` / `TWILIO_MESSAGING_SERVICE_SID` | alert | SMS (alternative provider) |
 | `SMS_DRY_RUN` | alert | `true` = log instead of send |
 | `REDIS_URL` | alert | durable BullMQ queue (empty = in-memory) |
 | `HEAT_INDEX_THRESHOLD_C` | alert | default 40 |
+| `ENV_RISK_TTL_HOURS`, `RECENT_VISIT_DAYS`, `VISIT_TZ_OFFSET` | clinic | weather-risk expiry (24), Recent Visits window (30), visit time zone (+08:00) |
 | `LEGACY_EMR_URL` | adapter | partner RHU SOAP endpoint |
 | `ANOMALY_*` | checkin | clinical thresholds – have the partner RHU physician approve them |
 

@@ -72,6 +72,22 @@ async function sendSms({ to, body }) {
   }
 }
 
+/** Sends through Twilio with no dry-run logic (used by smsSender, which applies the safety rules). */
+async function sendViaTwilio({ to, body }) {
+  const params = { to, body: String(body).slice(0, 640) };
+  if (process.env.TWILIO_MESSAGING_SERVICE_SID) params.messagingServiceSid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+  else params.from = process.env.TWILIO_FROM_NUMBER;
+  if (process.env.TWILIO_STATUS_CALLBACK_URL) params.statusCallback = process.env.TWILIO_STATUS_CALLBACK_URL;
+  try {
+    const msg = await getClient().messages.create(params);
+    return { sid: msg.sid, status: msg.status, provider: 'twilio' };
+  } catch (err) {
+    const wrapped = new Error(`Twilio error ${err.code || ''}: ${err.message}`);
+    wrapped.permanent = PERMANENT_ERRORS.has(Number(err.code)) || (err.status >= 400 && err.status < 500 && err.status !== 429);
+    throw wrapped;
+  }
+}
+
 /** Validates the X-Twilio-Signature header on status-callback webhooks. */
 function validateWebhook(signature, url, params) {
   if (!process.env.TWILIO_AUTH_TOKEN) return false;
@@ -80,4 +96,4 @@ function validateWebhook(signature, url, params) {
   return twilio.validateRequest(process.env.TWILIO_AUTH_TOKEN, signature || '', url, params || {});
 }
 
-module.exports = { sendSms, validateWebhook, isDryRun, isConfigured };
+module.exports = { sendSms, sendViaTwilio, validateWebhook, isDryRun, isConfigured };

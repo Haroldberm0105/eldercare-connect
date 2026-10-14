@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { useToast } from '../toast';
 import { PageHeader, Segmented, SeverityBadge, Empty, Loading, Chip } from '../components/ui';
-import { bp, conditionLabel, relTime, dateTime, age, friendlyError } from '../format';
+import { bp, conditionLabel, relTime, dateTime, age, friendlyError, visitWhen, VISIT_TYPE_LABEL } from '../format';
 
 const EMPTY = { systolic: '', diastolic: '', heartRate: '', temperatureC: '', spo2: '', bloodGlucose: '', missed: '', notes: '' };
 
@@ -45,6 +45,9 @@ export default function CaregiverCheckIn({ user }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [history, setHistory] = useState(null);
+  const [meds, setMeds] = useState(null);
+  const [missedIds, setMissedIds] = useState([]);
+  const [visits, setVisits] = useState([]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -57,6 +60,15 @@ export default function CaregiverCheckIn({ user }) {
     api(`/api/patients/${patientId}/history?days=7&limit=8`).then((h) => setHistory(h.checkins)).catch(() => setHistory([]));
   }, [patientId]);
   useEffect(() => { setHistory(null); loadHistory(); }, [loadHistory]);
+
+  // Prescribed medicines and the next scheduled visit for the selected patient
+  useEffect(() => {
+    if (!patientId) return;
+    setMeds(null);
+    setMissedIds([]);
+    api(`/api/patients/${patientId}/medications`).then(setMeds).catch(() => setMeds({ medications: [], todaySchedule: [] }));
+    api(`/api/patients/${patientId}/visits?view=upcoming`).then((r) => setVisits(r.visits)).catch(() => setVisits([]));
+  }, [patientId]);
 
   const patient = patients && patients.find((p) => p.id === patientId);
   const base = (patient && patient.baseline) || {};
@@ -81,7 +93,10 @@ export default function CaregiverCheckIn({ user }) {
           vitals,
           medication: {
             taken: medsTaken === 'yes',
-            missed: medsTaken === 'no' && form.missed ? form.missed.split(',').map((s) => s.trim()).filter(Boolean) : [],
+            missed: medsTaken === 'no'
+              ? [...(meds ? meds.medications.filter((m) => missedIds.includes(m.id)).map((m) => `${m.name} ${m.dosage}`) : []),
+                ...(form.missed ? form.missed.split(',').map((x) => x.trim()).filter(Boolean) : [])]
+              : [],
           },
           mobilityStatus: mobility,
           mood,
@@ -91,6 +106,7 @@ export default function CaregiverCheckIn({ user }) {
       setResult(r.checkin);
       setForm(EMPTY);
       setMedsTaken('yes');
+      setMissedIds([]);
       setMobility('normal');
       setMood('good');
       loadHistory();
@@ -147,10 +163,24 @@ export default function CaregiverCheckIn({ user }) {
           <Segmented label="Medicines today" name="meds" value={medsTaken} onChange={setMedsTaken}
             options={[{ value: 'yes', label: 'All taken' }, { value: 'no', label: 'Some missed', tone: 'danger' }]} />
           {medsTaken === 'no' && (
-            <label className="field">
-              <span>Which medicines were missed?</span>
-              <input value={form.missed} onChange={(e) => set('missed')(e.target.value)} placeholder="e.g. Losartan, Amlodipine" />
-            </label>
+            <>
+              {meds && meds.medications.length > 0 && (
+                <fieldset className="checks">
+                  <legend>Which medicines were missed?</legend>
+                  {meds.medications.map((m) => (
+                    <label key={m.id} className={`check ${missedIds.includes(m.id) ? 'is-on' : ''}`}>
+                      <input type="checkbox" checked={missedIds.includes(m.id)}
+                        onChange={() => setMissedIds((ids) => (ids.includes(m.id) ? ids.filter((x) => x !== m.id) : [...ids, m.id]))} />
+                      {m.name} {m.dosage}
+                    </label>
+                  ))}
+                </fieldset>
+              )}
+              <label className="field">
+                <span>{meds && meds.medications.length ? 'Other missed medicines (optional)' : 'Which medicines were missed?'}</span>
+                <input value={form.missed} onChange={(e) => set('missed')(e.target.value)} placeholder="e.g. Vitamin B complex" />
+              </label>
+            </>
           )}
           <Segmented label="Moving around" name="mobility" value={mobility} onChange={setMobility} options={MOBILITY} />
           <Segmented label="Mood" name="mood" value={mood} onChange={setMood} options={MOOD} />
@@ -184,6 +214,37 @@ export default function CaregiverCheckIn({ user }) {
           <button className="btn btn-primary btn-lg" disabled={busy || !patientId}>{busy ? 'Saving…' : 'Save check-in'}</button>
         </form>
 
+        <div className="stack">
+        {visits.length > 0 && (
+          <section className="panel visit-banner">
+            <h2 className="panel-title">Upcoming visit</h2>
+            {visits.slice(0, 1).map((v) => (
+              <div key={v.id}>
+                <p className="big-line">{visitWhen(v)}</p>
+                <p>{VISIT_TYPE_LABEL[v.visitType]}: {v.destination}</p>
+                <p className="muted small">{v.location}</p>
+                {v.notes && <p className="small">Note from the nurse: {v.notes}</p>}
+              </div>
+            ))}
+          </section>
+        )}
+
+        <section className="panel">
+          <h2 className="panel-title">Prescribed medicines</h2>
+          {!meds && <Loading />}
+          {meds && meds.medications.length === 0 && <p className="muted small">No prescriptions on record. Ask the health center to add them.</p>}
+          {meds && meds.medications.length > 0 && (
+            <ul className="med-list">
+              {meds.medications.map((m) => (
+                <li key={m.id}>
+                  <div><strong>{m.name}</strong> {m.dosage}<br /><span className="muted small">{m.frequency}{m.times.length ? ` at ${m.times.join(', ')}` : ''}</span></div>
+                  {m.instructions && <span className="small med-note">{m.instructions}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
         <section className="panel">
           <h2 className="panel-title">This week</h2>
           {!history && <Loading />}
@@ -208,6 +269,7 @@ export default function CaregiverCheckIn({ user }) {
             </ul>
           )}
         </section>
+        </div>
       </div>
     </>
   );

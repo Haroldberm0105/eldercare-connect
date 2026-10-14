@@ -50,7 +50,8 @@ function forwardTo(serviceKey, pathBuilder) {
           method: req.method,
           url: baseUrl + path,
           headers: buildHeaders(req),
-          data: ['GET', 'HEAD', 'DELETE'].includes(req.method) ? undefined : req.body,
+          // Forward the exact bytes the client sent when available (webhook signatures depend on them).
+          data: ['GET', 'HEAD', 'DELETE'].includes(req.method) ? undefined : (req.rawBody && req.rawBody.length ? req.rawBody : req.body),
           validateStatus: () => true, // pass 4xx/5xx bodies straight back to the client
         },
         // Only idempotent reads are retried; a POST is never re-sent automatically.

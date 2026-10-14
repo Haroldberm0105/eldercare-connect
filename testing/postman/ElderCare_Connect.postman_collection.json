@@ -1,6 +1,6 @@
 {
   "info": {
-    "_postman_id": "6dc6f03c-0c73-4dcb-b3b8-4da1a1bdaa6b",
+    "_postman_id": "f589e944-b535-4a4d-a7e0-f58ce6ac1613",
     "name": "ElderCare Connect API",
     "description": "Functional, security and end-to-end integration tests for the ElderCare Connect API Gateway.\nRun the whole collection in order (Collection Runner or `newman run`). Folder '0. Auth' must run first.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
@@ -952,7 +952,9 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
-                  "pm.test(\"Sorted by total score desc\", () => { const s = pm.response.json().items.map(i => i.scores.total); pm.expect(s).to.eql([...s].sort((a,b) => b-a)); });"
+                  "const items = pm.response.json().items;",
+                  "pm.test(\"Sorted by priority (P1 first), then score desc\", () => { for (let i = 1; i < items.length; i++) { const a = items[i-1], b = items[i]; pm.expect(a.priority <= b.priority).to.be.true; if (a.priority === b.priority) pm.expect(a.scores.total >= b.scores.total).to.be.true; } });",
+                  "pm.test(\"Thresholds published\", () => pm.expect(pm.response.json().thresholds).to.have.property(\"urgent\"));"
                 ]
               }
             }
@@ -1230,6 +1232,747 @@
           }
         }
       ]
+    },
+    {
+      "name": "6. v1.1 - Triage, visits, history, medicines, onboarding",
+      "item": [
+        {
+          "name": "Normal vitals de-escalate the case (vitals sync fix)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"No anomalies\", () => pm.expect(pm.response.json().checkin.severity).to.eql(\"none\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{caregiverToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/checkins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "checkins"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"patientId\": \"P-1001\",\n  \"vitals\": {\n    \"systolic\": 124,\n    \"diastolic\": 80,\n    \"heartRate\": 72,\n    \"temperatureC\": 36.6,\n    \"spo2\": 98\n  },\n  \"medication\": {\n    \"taken\": true\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Queue: P-1001 health score is 0, not Urgent",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 1500); // let the checkin.normal event reach the clinic service"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "",
+                  "const item = pm.response.json().items[0];",
+                  "pm.test(\"Case is still open for weather/other signals or gone\", () => { if (item) { pm.expect(item.scores.health).to.eql(0); pm.expect(item.priority).to.not.eql(\"P1\"); pm.expect(item.category).to.be.oneOf([\"high\",\"watch\",\"routine\"]); } });",
+                  "if (item) pm.collectionVariables.set(\"v11ItemId\", item.id); else pm.collectionVariables.set(\"v11ItemId\", pm.collectionVariables.get(\"e2eItemId\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/clinic/queue?patientId=P-1001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "clinic",
+                "queue"
+              ],
+              "query": [
+                {
+                  "key": "patientId",
+                  "value": "P-1001"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Status 'scheduled' without visit details (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"422 visit_details_required or 404 if case closed\", () => pm.expect(pm.response.code).to.be.oneOf([422, 404]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/clinic/queue/{{v11ItemId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "clinic",
+                "queue",
+                "{{v11ItemId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"scheduled\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Schedule visit - invalid (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"Field-level details\", () => pm.expect(pm.response.json().details.length).to.be.at.least(2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/clinic/queue/{{v11ItemId}}/visits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "clinic",
+                "queue",
+                "{{v11ItemId}}",
+                "visits"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"visitDate\": \"2020-01-01\",\n  \"visitTime\": \"23:00\",\n  \"visitType\": \"home_visit\",\n  \"destination\": \"Home\",\n  \"location\": \"x\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Schedule visit - date, time, destination, location (201)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = new Date(Date.now() + 8*3600e3 + 86400e3); pm.collectionVariables.set(\"visitDate\", d.toISOString().slice(0,10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 201\", () => pm.response.to.have.status(201));",
+                  "",
+                  "const j = pm.response.json();",
+                  "pm.test(\"Visit saved and case scheduled\", () => { pm.expect(j.visit.visitTime).to.eql(\"09:30\"); pm.expect(j.visit.location).to.include(\"Tondo\"); pm.expect(j.item.status).to.eql(\"scheduled\"); });",
+                  "pm.collectionVariables.set(\"visitId\", j.visit.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/clinic/queue/{{v11ItemId}}/visits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "clinic",
+                "queue",
+                "{{v11ItemId}}",
+                "visits"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"visitDate\": \"{{visitDate}}\",\n  \"visitTime\": \"09:30\",\n  \"visitType\": \"home_visit\",\n  \"destination\": \"Patient's home\",\n  \"location\": \"Tondo, Manila (near the chapel)\",\n  \"contactPhone\": \"09171234567\",\n  \"notes\": \"Bring BP monitor\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Family sees upcoming visit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Contains the visit\", () => pm.expect(pm.response.json().visits.map(v => v.id)).to.include(pm.collectionVariables.get(\"visitId\")));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{familyToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/patients/P-1001/visits?view=upcoming",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "P-1001",
+                "visits"
+              ],
+              "query": [
+                {
+                  "key": "view",
+                  "value": "upcoming"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Complete visit + resolve case (Recent Visits trigger)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Visit completed, case resolved\", () => { const j = pm.response.json(); pm.expect(j.visit.status).to.eql(\"completed\"); pm.expect(j.item.status).to.eql(\"resolved\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/clinic/visits/{{visitId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "clinic",
+                "visits",
+                "{{visitId}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"completed\",\n  \"outcome\": \"BP 126/80 on recheck, medicines reviewed\",\n  \"resolveCase\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "GET /api/clinic/visits?view=recent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Completed visit listed first\", () => pm.expect(pm.response.json().visits[0].id).to.eql(pm.collectionVariables.get(\"visitId\")));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/clinic/visits?view=recent&patientId=P-1001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "clinic",
+                "visits"
+              ],
+              "query": [
+                {
+                  "key": "view",
+                  "value": "recent"
+                },
+                {
+                  "key": "patientId",
+                  "value": "P-1001"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /api/clinic/queue/history (resolved cases)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Resolved case with visit + notes\", () => { const c = pm.response.json().cases.find(x => x.id === pm.collectionVariables.get(\"v11ItemId\")); pm.expect(c).to.exist; pm.expect(c.resolutionNotes).to.be.a(\"string\"); pm.expect(c.visits).to.not.be.empty; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/clinic/queue/history?patientId=P-1001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "clinic",
+                "queue",
+                "history"
+              ],
+              "query": [
+                {
+                  "key": "patientId",
+                  "value": "P-1001"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /api/patients/:id (full profile)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Profile fields\", () => { const p = pm.response.json(); pm.expect(p.id).to.eql(\"P-1001\"); pm.expect(p).to.have.property(\"addressLine\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/patients/P-1001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "P-1001"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Caregiver views prescribed medicines",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Medicines + today schedule\", () => { const j = pm.response.json(); pm.expect(j.medications).to.not.be.empty; pm.expect(j.todaySchedule).to.be.an(\"array\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{caregiverToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/patients/P-1001/medications",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "P-1001",
+                "medications"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Caregiver cannot prescribe (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{caregiverToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/patients/P-1001/medications",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "patients",
+                "P-1001",
+                "medications"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"X\",\n  \"dosage\": \"1\",\n  \"frequency\": \"daily\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Onboard patient - invalid (422)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 422\", () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/patients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "patients"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"X\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Onboard patient (201, or 409 duplicate on re-run)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201 created or 409 duplicate\", () => pm.expect(pm.response.code).to.be.oneOf([201, 409]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/patients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "patients"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Postman Test Patient\",\n  \"birthDate\": \"1948-03-15\",\n  \"sex\": \"M\",\n  \"addressLine\": \"12 Mabini St, Brgy 5, Manila\",\n  \"zipCode\": \"1000\",\n  \"conditions\": [\n    \"hypertension\"\n  ],\n  \"baseline\": {\n    \"systolic\": 130,\n    \"diastolic\": 80\n  },\n  \"medications\": [\n    {\n      \"name\": \"Amlodipine\",\n      \"dosage\": \"5 mg\",\n      \"frequency\": \"Once daily\",\n      \"times\": [\n        \"08:00\"\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Caregiver cannot onboard (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{caregiverToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/patients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "patients"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fullName\": \"Someone Else\",\n  \"birthDate\": \"1950-01-01\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "SMS contacts + provider mode",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status is 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"SMS mode reported\", () => pm.expect(pm.response.json().sms.live).to.be.a(\"boolean\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{nurseToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/alerts/subscribers?patientId=P-1001",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "alerts",
+                "subscribers"
+              ],
+              "query": [
+                {
+                  "key": "patientId",
+                  "value": "P-1001"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ],
   "variable": [
@@ -1275,6 +2018,18 @@
     },
     {
       "key": "e2eItemId",
+      "value": ""
+    },
+    {
+      "key": "v11ItemId",
+      "value": ""
+    },
+    {
+      "key": "visitId",
+      "value": ""
+    },
+    {
+      "key": "visitDate",
       "value": ""
     }
   ]

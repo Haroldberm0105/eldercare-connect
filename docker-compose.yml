@@ -101,6 +101,15 @@ services:
       TWILIO_STATUS_CALLBACK_URL: "${TWILIO_STATUS_CALLBACK_URL:-}"
       TWILIO_INBOUND_WEBHOOK_URL: "${TWILIO_INBOUND_WEBHOOK_URL:-}"
       SMS_DRY_RUN: "${SMS_DRY_RUN:-true}"
+      SMS_PROVIDER: "${SMS_PROVIDER:-}"
+      TEXTBEE_API_KEY: "${TEXTBEE_API_KEY:-}"
+      TEXTBEE_DEVICE_ID: "${TEXTBEE_DEVICE_ID:-}"
+      TEXTBEE_BASE_URL: "${TEXTBEE_BASE_URL:-https://api.textbee.dev/api/v1}"
+      TEXTBEE_SIM_SUBSCRIPTION_ID: "${TEXTBEE_SIM_SUBSCRIPTION_ID:-}"
+      TEXTBEE_WEBHOOK_SECRET: "${TEXTBEE_WEBHOOK_SECRET:-}"
+      TEXTBEE_VALIDATE_WEBHOOK: "${TEXTBEE_VALIDATE_WEBHOOK:-true}"
+      SMS_RECIPIENT_ALLOWLIST: "${SMS_RECIPIENT_ALLOWLIST:-}"
+      SMS_DAILY_LIMIT: "${SMS_DAILY_LIMIT:-40}"
     depends_on:
       alert-db: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -114,6 +123,9 @@ services:
       DATABASE_URL: "postgres://clinic_user:${CLINIC_DB_PASSWORD:-clinic_pass}@clinic-db:5432/clinic_db"
       INTERNAL_SERVICE_TOKEN: "${INTERNAL_SERVICE_TOKEN}"
       LEGACY_ADAPTER_URL: http://legacy-emr-adapter:4004
+      ENV_RISK_TTL_HOURS: "${ENV_RISK_TTL_HOURS:-24}"
+      RECENT_VISIT_DAYS: "${RECENT_VISIT_DAYS:-30}"
+      VISIT_TZ_OFFSET: "${VISIT_TZ_OFFSET:-+08:00}"
     depends_on: { clinic-db: { condition: service_healthy } }
 
   legacy-emr-adapter:

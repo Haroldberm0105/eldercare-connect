@@ -1,16 +1,10 @@
 import React, { useState } from 'react';
 import { login } from '../api';
 import { Logo } from '../components/Shell';
+import { DEMO, DEMO_PASSWORD } from '../demoAccounts';
 
-const DEMO = [
-  { username: 'caregiver.maria', name: 'Maria Santos', role: 'Caregiver', does: 'Logs daily vitals for Lola Remedios and Lolo Ernesto' },
-  { username: 'family.jose', name: 'Jose Reyes', role: 'Family member', does: "Follows Lola Remedios's health and alerts" },
-  { username: 'nurse.ana', name: 'Ana Cruz, RN', role: 'Clinic nurse', does: 'Works the barangay health center risk queue' },
-  { username: 'admin.harold', name: 'Harold Bermudez', role: 'Administrator', does: 'Monitors services, integrations and accounts' },
-];
-const DEMO_PASSWORD = 'ElderCare@2026';
 
-export default function Login({ onLogin }) {
+export default function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -21,7 +15,7 @@ export default function Login({ onLogin }) {
     setBusy(key);
     setError('');
     try {
-      onLogin(await login(u, p));
+      await login(u, p); // App reacts to the identity change and opens the right home page
     } catch (err) {
       setError(err.message);
       setBusy(null);

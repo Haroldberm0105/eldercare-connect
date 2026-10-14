@@ -60,4 +60,24 @@ function listUsers() {
   }));
 }
 
-module.exports = { hashPassword, verifyPassword, findByCredentials, findById, listUsers };
+/**
+ * Adds/removes patient IDs on a caregiver or family account (used when onboarding a patient).
+ * Writes users.json atomically (temp file + rename). The user must sign in again to get a token
+ * with the new `patients` claim.
+ */
+function updateUserPatients(userId, { add = [], remove = [] }) {
+  const raw = JSON.parse(fs.readFileSync(config.usersFile, 'utf8'));
+  const user = raw.find((u) => u.id === userId);
+  if (!user) return null;
+  const set = new Set(user.patients || []);
+  add.forEach((p) => set.add(p));
+  remove.forEach((p) => set.delete(p));
+  user.patients = [...set].sort();
+  const tmp = `${config.usersFile}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(raw, null, 2)}\n`);
+  fs.renameSync(tmp, config.usersFile);
+  cache = null; // reload on next lookup
+  return { id: user.id, username: user.username, name: user.name, role: user.role, patients: user.patients };
+}
+
+module.exports = { hashPassword, verifyPassword, findByCredentials, findById, listUsers, updateUserPatients };

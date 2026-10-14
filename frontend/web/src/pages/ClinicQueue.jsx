@@ -3,20 +3,31 @@ import { api } from '../api';
 import { useToast } from '../toast';
 import { PageHeader, PriorityTag, StatusPill, Empty, ErrorNote, Loading, Chip } from '../components/ui';
 import TriageBar from '../components/TriageBar';
+import { ScheduleVisitDialog, VisitCard } from '../components/visits';
+import { navigate } from '../router';
 import { REASON_LABEL, STATUS_LABEL, conditionLabel, relTime, dateTime } from '../format';
 
+// 'Schedule visit' is not a plain status change: it opens a form that captures date, time, destination
+// and location (POST /api/clinic/queue/:id/visits), which then moves the case to 'scheduled'.
 const ACTIONS = {
-  open: [['in_review', 'Start review'], ['scheduled', 'Schedule visit'], ['resolved', 'Mark resolved'], ['dismissed', 'Dismiss']],
-  in_review: [['scheduled', 'Schedule visit'], ['resolved', 'Mark resolved'], ['dismissed', 'Dismiss']],
-  scheduled: [['resolved', 'Mark resolved'], ['in_review', 'Back to review']],
+  open: [['in_review', 'Start review'], ['schedule', 'Schedule visit'], ['resolved', 'Mark resolved'], ['dismissed', 'Dismiss']],
+  in_review: [['schedule', 'Schedule visit'], ['resolved', 'Mark resolved'], ['dismissed', 'Dismiss']],
+  scheduled: [['schedule', 'Reschedule'], ['resolved', 'Mark resolved'], ['in_review', 'Back to review']],
 };
 const ACTIVE = ['open', 'in_review', 'scheduled'];
+const HEALTH_TYPES = ['health_anomaly', 'vitals_normal', 'missed_checkin'];
 
-const REASON_WEIGHT = { health_anomaly: 4, environmental_risk: 3, missed_checkin: 2, emr_enrichment: 1 };
-
-/** The reason that best explains the priority: most important type among recent reasons, newest first. */
-function primaryReason(reasons) {
-  return reasons.slice(0, 6).reduce((best, r) => (!best || (REASON_WEIGHT[r.type] || 0) > (REASON_WEIGHT[best.type] || 0) ? r : best), null);
+/**
+ * The reason that explains the CURRENT priority: the latest health reading if it still adds risk,
+ * otherwise the latest weather risk, otherwise the latest event (e.g. "Normal check-in").
+ */
+function primaryReason(item) {
+  const recent = item.reasons.slice(0, 10);
+  const health = recent.find((r) => HEALTH_TYPES.includes(r.type));
+  const env = recent.find((r) => r.type === 'environmental_risk');
+  if (item.scores.health > 0 && health && health.type !== 'vitals_normal') return health;
+  if (item.scores.environment > 0 && env) return env;
+  return health || env || recent[0] || null;
 }
 
 /** Collapse repeated identical reasons ("Clinic records" x5) into one line with a count. */
@@ -69,7 +80,7 @@ function ScoreBreakdown({ scores }) {
   );
 }
 
-function EmrPanel({ state }) {
+export function EmrPanel({ state }) {
   if (!state) return <Loading label="Loading clinic records" />;
   if (state.error) return <p className="muted small">{state.error}</p>;
   const h = state.history;
@@ -81,7 +92,7 @@ function EmrPanel({ state }) {
         <div><dt>Current medicines</dt><dd>{h.medications.filter((m) => m.active).map((m) => <span key={m.name} className="emr-line">{m.name} {m.dosage}<small> {m.frequency}</small></span>)}</dd></div>
         <div><dt>Allergies</dt><dd>{h.allergies.length ? h.allergies.join(', ') : 'None recorded'}</dd></div>
       </dl>
-      <h4>Recent visits</h4>
+      <h4>Past visits in the records system</h4>
       <ul className="visits">
         {h.visits.slice(0, 4).map((v) => (
           <li key={v.id}>
@@ -98,7 +109,8 @@ export default function ClinicQueue({ user }) {
   const toast = useToast();
   const [queue, setQueue] = useState(null);
   const [error, setError] = useState('');
-  const [selectedId, setSelectedId] = useState(null);
+  // ?case=<id> preselects a case (used by the patient profile's "Open in risk queue" link)
+  const [selectedId, setSelectedId] = useState(() => new URLSearchParams(window.location.search).get('case'));
   const [priority, setPriority] = useState(null);
   const [search, setSearch] = useState('');
   const [emr, setEmr] = useState(null);
@@ -107,6 +119,8 @@ export default function ClinicQueue({ user }) {
   const [weather, setWeather] = useState(null);
   const [checking, setChecking] = useState(false);
   const [showAllReasons, setShowAllReasons] = useState(false);
+  const [visits, setVisits] = useState(null);
+  const [scheduling, setScheduling] = useState(false);
   const canAct = user.role === 'clinic_staff';
 
   const load = useCallback(() => api('/api/clinic/queue')
@@ -135,17 +149,25 @@ export default function ClinicQueue({ user }) {
     }
   }
 
+  const loadVisits = useCallback((patientId) => Promise.all([
+    api(`/api/clinic/visits?patientId=${patientId}&view=upcoming`),
+    api(`/api/clinic/visits?patientId=${patientId}&view=recent`),
+  ]).then(([u, r]) => setVisits({ upcoming: u.visits, recent: r.visits })).catch(() => setVisits({ upcoming: [], recent: [] })), []);
+
   useEffect(() => {
     setEmr(null);
     setNote('');
     setShowAllReasons(false);
+    setVisits(null);
     if (!selected) return;
+    loadVisits(selected.patient.id);
     api(`/api/clinic/patients/${selected.patient.id}/emr-history`)
       .then((r) => setEmr(r))
       .catch((e) => setEmr({ error: e.status === 404 ? 'This patient has no record in the clinic records system.' : e.message }));
   }, [selectedId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function act(status, label) {
+    if (status === 'schedule') { setScheduling(true); return; }
     setSaving(true);
     try {
       await api(`/api/clinic/queue/${selected.id}`, { method: 'PATCH', body: { status, notes: note.trim() || undefined, assignedTo: user.id } });
@@ -210,7 +232,7 @@ export default function ClinicQueue({ user }) {
               ) : (
                 <ul className="queue">
                   {items.map((i) => {
-                    const why = primaryReason(i.reasons);
+                    const why = primaryReason(i);
                     return (
                     <li key={i.id}>
                       <button type="button" className={`queue-row ribbon-${i.priority} ${i.id === selectedId ? 'is-selected' : ''}`} onClick={() => select(i.id)} aria-current={i.id === selectedId}>
@@ -248,12 +270,27 @@ export default function ClinicQueue({ user }) {
                     </div>
                     <PriorityTag value={selected.priority} long />
                   </div>
+                  <div className="btn-row detail-links">
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => navigate(`/clinic/patients/${encodeURIComponent(selected.patient.id)}`)}>
+                      Open full patient profile
+                    </button>
+                  </div>
                   <div className="chips-row">
                     {selected.patient.conditions.map((c) => <Chip key={c}>{conditionLabel(c)}</Chip>)}
                     {selected.patient.mobilityRestricted && <Chip tone="chip-warn">Limited mobility</Chip>}
                   </div>
 
                   <ScoreBreakdown scores={selected.scores} />
+                  {selected.priorityRule && <p className="muted small priority-rule">Why {selected.priority}: {selected.priorityRule}</p>}
+
+                  {visits && visits.upcoming.length > 0 && (
+                    <>
+                      <h3>Scheduled visit</h3>
+                      {visits.upcoming.map((v) => (
+                        <VisitCard key={v.id} visit={v} canAct={canAct} onChanged={(r) => { loadVisits(selected.patient.id); load(); if (r.item && !ACTIVE.includes(r.item.status)) setSelectedId(null); }} />
+                      ))}
+                    </>
+                  )}
 
                   {canAct && ACTIONS[selected.status] && (
                     <div className="actions-box">
@@ -297,6 +334,11 @@ export default function ClinicQueue({ user }) {
                     );
                   })()}
 
+                  <h3>Recent visits</h3>
+                  {!visits && <Loading label="Loading visits" />}
+                  {visits && visits.recent.length === 0 && <p className="muted small">No completed visits in the last 30 days. A visit appears here once it is marked completed.</p>}
+                  {visits && visits.recent.map((v) => <VisitCard key={v.id} visit={v} canAct={false} />)}
+
                   <h3>Clinic records</h3>
                   <EmrPanel state={emr} />
                 </>
@@ -304,6 +346,14 @@ export default function ClinicQueue({ user }) {
             </aside>
           </div>
         </>
+      )}
+      {scheduling && selected && (
+        <ScheduleVisitDialog
+          item={selected}
+          existing={visits && visits.upcoming[0]}
+          onClose={() => setScheduling(false)}
+          onScheduled={() => { setScheduling(false); loadVisits(selected.patient.id); load(); }}
+        />
       )}
     </>
   );

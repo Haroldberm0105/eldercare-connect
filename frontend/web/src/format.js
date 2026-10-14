@@ -20,7 +20,25 @@ export const REASON_LABEL = {
   missed_checkin: 'Missed check-in',
   environmental_risk: 'Weather risk',
   emr_enrichment: 'Clinic records',
+  vitals_normal: 'Normal check-in',
 };
+
+export const VISIT_TYPE_LABEL = { home_visit: 'Home visit', clinic_visit: 'Clinic visit', teleconsult: 'Teleconsult' };
+export const VISIT_STATUS_LABEL = { scheduled: 'Scheduled', completed: 'Completed', cancelled: 'Cancelled', no_show: 'No show' };
+export const CATEGORY_LABEL = { urgent: 'Urgent', high: 'High', watch: 'Watch', routine: 'Routine' };
+
+/** Today's date in Manila as YYYY-MM-DD (for date inputs). */
+export function todayManila(offsetDays = 0) {
+  const d = new Date(Date.now() + 8 * 3600000 + offsetDays * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+/** "Thu, Oct 15 at 9:30 AM" from a visit's local date + time. */
+export function visitWhen(v) {
+  if (!v) return '';
+  const d = new Date(`${v.visitDate}T${v.visitTime}:00+08:00`);
+  return d.toLocaleString('en-PH', { timeZone: 'Asia/Manila', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
 
 export const SEVERITY_LABEL = { none: 'Normal', low: 'Low', moderate: 'Moderate', high: 'High', critical: 'Critical' };
 

@@ -27,6 +27,8 @@ npx newman run postman/ElderCare_Connect.postman_collection.json \
 Folder **5. Integration** is the end-to-end chain from Section 4's objective:
 caregiver check-in → Family Alert raised + SMS queued → Clinic Risk Queue item (P1/P2) → legacy EMR history via SOAP adapter → nurse updates triage status. The console prints the observed end-to-end time.
 
+Folder **6. v1.1** covers the QA fixes: normal vitals lower an urgent case, schedule visit validation (422) and save (201), family sees the visit, completing it fills Recent Visits and Case history, caregiver medicines, onboarding (201 first run, 409 after), RBAC. Run the whole collection in order: folder 6 uses the case from folder 5.
+
 ## SoapUI – legacy SOAP integration
 1. Make sure the mock EMR (`:4005`) and the adapter (`:4004`) are running (both are published by docker compose).
 2. SoapUI → File → Import Project → `soapui/ElderCare_Legacy_EMR-soapui-project.xml`.
@@ -54,6 +56,8 @@ jmeter -n -t jmeter/ElderCare_Connect_Load_Stress.jmx \
   -Jhost=localhost -Jport=8080 -Jusers=50 -JclinicUsers=10 -JrampUp=60 -Jduration=300 \
   -l jmeter/results/load.jtl -e -o jmeter/results/load-report
 ```
+
+The clinic group also reads the v1.1 endpoints: upcoming and recent visits, case history and prescribed medicines.
 
 Stress test (typhoon spike): open the plan in the JMeter GUI, enable **STRESS - Typhoon alert spike**, optionally disable the two LOAD groups, then:
 ```bash

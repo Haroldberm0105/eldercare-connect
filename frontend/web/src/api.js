@@ -11,12 +11,16 @@ let session = (() => {
 })();
 
 function save(next) {
+  const before = currentUser();
   session = next;
   try {
     if (next) sessionStorage.setItem(KEY, JSON.stringify(next));
     else sessionStorage.removeItem(KEY);
   } catch { /* storage unavailable: keep the session in memory only */ }
-  if (!next) listeners.forEach((fn) => fn());
+  const after = currentUser();
+  // Notify only when the signed-in identity changes (sign-in, sign-out, account switch) -
+  // a silent token refresh for the same user must not reset the app.
+  if ((before && before.id) !== (after && after.id)) listeners.forEach((fn) => fn(after));
 }
 
 function decode(token) {
@@ -34,8 +38,8 @@ export function currentUser() {
   return { id: c.sub, name: c.name || c.sub, role: c.role, patients: c.patients || [] };
 }
 
-/** Called whenever the session ends (logout or expired refresh token). */
-export function onSessionEnd(fn) {
+/** Called whenever the signed-in user changes: sign-in, sign-out, account switch, or expired session. */
+export function onSessionChange(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
@@ -56,6 +60,16 @@ async function tokenRequest(body) {
 
 export const login = (username, password) => tokenRequest({ grant_type: 'password', username, password });
 export const logout = () => save(null);
+
+/**
+ * Switches to another account in one step: the old tokens are discarded before the new sign-in,
+ * so no data from the previous user can be requested with the old session. On failure the user is
+ * left signed out (never half-switched).
+ */
+export async function switchAccount(username, password) {
+  save(null);
+  return login(username, password);
+}
 
 async function refresh() {
   if (!session || !session.refreshToken) return false;

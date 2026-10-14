@@ -14,14 +14,15 @@ const logger = require('./src/lib/logger');
 const { pool, migrate, waitForDb } = require('./src/db');
 const smsQueue = require('./src/smsQueue');
 const mashup = require('./src/weatherAlertMashup');
-const { isDryRun } = require('./src/twilioClient');
+const smsSender = require('./src/smsSender');
 const { breakerSnapshots } = require('./src/lib/resilientHttp');
 const routes = require('./src/routes');
 
 const app = express();
 app.disable('x-powered-by');
 app.use(helmet());
-app.use(express.json({ limit: '50kb' }));
+// Keep the raw bytes: TextBee webhook signatures are computed over the exact request body.
+app.use(express.json({ limit: '50kb', verify: (req, res, buf) => { req.rawBody = buf; } }));
 app.use(express.urlencoded({ extended: false, limit: '20kb' })); // Twilio callbacks
 
 app.get('/health', async (req, res) => {
@@ -35,7 +36,8 @@ app.get('/health', async (req, res) => {
     service: 'alert-service',
     db,
     integrations: {
-      twilio: isDryRunSafe() ? 'dry-run' : 'live',
+      sms: smsSender.mode(),
+      twilio: smsSender.provider() === 'twilio' && smsSender.mode().live ? 'live' : 'dry-run',
       openWeatherMap: process.env.OPENWEATHER_API_KEY ? 'configured' : 'not-configured',
       lastWeatherFetch: rows[0] && rows[0].last_weather,
       smsQueue: process.env.REDIS_URL ? 'bullmq' : `in-memory (depth ${smsQueue.depth()})`,
@@ -45,9 +47,6 @@ app.get('/health', async (req, res) => {
   res.status(db === 'up' ? 200 : 503).json(body);
 });
 
-function isDryRunSafe() {
-  try { return isDryRun(); } catch { return false; }
-}
 
 app.use(routes);
 app.use((req, res) => res.status(404).json({ error: 'not_found' }));
@@ -64,7 +63,7 @@ async function main() {
   smsQueue.init();
   mashup.startScheduler();
   const port = Number(process.env.PORT || 4002);
-  const server = app.listen(port, () => logger.info('alert-service listening', { port, smsDryRun: isDryRunSafe() }));
+  const server = app.listen(port, () => logger.info('alert-service listening', { port, sms: smsSender.mode() }));
   const shutdown = () => server.close(async () => { await smsQueue.close(); await pool.end(); process.exit(0); });
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

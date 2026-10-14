@@ -21,6 +21,7 @@ const logger = require('./src/lib/logger');
 const { requestContext } = require('./src/middleware/requestContext');
 const oauthRoutes = require('./src/routes/oauth');
 const adminRoutes = require('./src/routes/admin');
+const directoryRoutes = require('./src/routes/directory');
 const apiRoutes = require('./src/routes');
 const { forwardTo } = require('./src/lib/proxy');
 
@@ -45,8 +46,10 @@ app.use(
   }),
 );
 
-app.use(express.json({ limit: '100kb' }));
-app.use(express.urlencoded({ extended: false, limit: '20kb' }));
+// Keep the raw request bytes so webhooks (TextBee X-Signature, Twilio) can be verified downstream.
+const keepRaw = (req, res, buf) => { req.rawBody = buf; };
+app.use(express.json({ limit: '100kb', verify: keepRaw }));
+app.use(express.urlencoded({ extended: false, limit: '20kb', verify: keepRaw }));
 
 // Malformed JSON -> 400 instead of a stack trace.
 app.use((err, req, res, next) => {
@@ -79,10 +82,13 @@ app.use('/oauth', authLimiter, oauthRoutes);
 app.post('/webhooks/twilio/status', apiLimiter, forwardTo('alert'));
 // Incoming SMS from caregivers without internet (SMS check-in fallback, Risk 3).
 app.post('/webhooks/twilio/inbound', apiLimiter, forwardTo('alert'));
+// TextBee (Android SMS gateway): delivery receipts + incoming SMS check-ins, verified by X-Signature downstream.
+app.post('/webhooks/textbee', apiLimiter, forwardTo('alert'));
 
 // Protected endpoints
 app.use('/api', apiLimiter);
 app.use('/api/admin', adminRoutes);
+app.use('/api/directory', directoryRoutes);
 app.use('/api', apiRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'not_found', message: `No route for ${req.method} ${req.path}` }));

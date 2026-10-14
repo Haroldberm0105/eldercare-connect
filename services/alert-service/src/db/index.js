@@ -2,7 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const { Pool } = require('pg');
+const { Pool, types } = require('pg');
+
+// Return SQL DATE columns as plain 'YYYY-MM-DD' strings. The default converts them to a JS Date at
+// local midnight, which shifts birthdays/visit dates by a day when serialised as UTC (e.g. in Manila, UTC+8).
+types.setTypeParser(1082, (v) => v);
 const logger = require('../lib/logger');
 
 const pool = new Pool({

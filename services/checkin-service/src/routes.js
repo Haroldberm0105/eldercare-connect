@@ -7,6 +7,7 @@ const { detectAnomalies } = require('./anomaly');
 const outbox = require('./outbox');
 const logger = require('./lib/logger');
 const { requireInternalToken } = require('./lib/internalAuth');
+const { validatePatient, validateMedication } = require('./patientValidation');
 
 const router = express.Router();
 router.use(requireInternalToken);
@@ -25,7 +26,38 @@ function toPatientDto(r) {
     mobilityRestricted: r.mobility_restricted,
     baseline: r.baseline,
     assignedClinic: r.assigned_clinic,
+    sex: r.sex || null,
+    addressLine: r.address_line || null,
+    emergencyContact: r.emergency_contact && Object.keys(r.emergency_contact).length ? r.emergency_contact : null,
+    notes: r.notes || null,
+    createdAt: r.created_at,
   };
+}
+
+function toMedicationDto(r) {
+  return {
+    id: r.id,
+    patientId: r.patient_id,
+    name: r.name,
+    dosage: r.dosage,
+    frequency: r.frequency,
+    times: r.times,
+    instructions: r.instructions,
+    prescribedBy: r.prescribed_by,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    active: r.active,
+    updatedAt: r.updated_at,
+  };
+}
+
+const CLINIC_ROLES = ['clinic_staff', 'system_admin'];
+function requireRole(req, res, roles) {
+  if (!req.user || !roles.includes(req.user.role)) {
+    res.status(403).json({ error: 'forbidden', message: 'Your role cannot perform this action' });
+    return false;
+  }
+  return true;
 }
 
 function toCheckinDto(r) {
@@ -97,23 +129,34 @@ async function createCheckin(caregiverId, allowedPatients, input, requestId) {
     );
     const checkin = toCheckinDto(rows[0]);
     let event = null;
-    if (detection.anomalies.length) {
+    const patientRef = { id: patient.id, fullName: patient.fullName, zipCode: patient.zipCode, conditions: patient.conditions, mobilityRestricted: patient.mobilityRestricted, assignedClinic: patient.assignedClinic };
+    if (!detection.anomalies.length) {
+      // Normal reading: notify only the Clinic Risk Queue so an open case is de-escalated
+      // (e.g. Urgent -> Routine). Families are not alerted for normal readings.
+      event = await outbox.enqueueEvent(client, 'checkin.normal', {
+        patient: patientRef,
+        checkin: { id: checkin.id, recordedAt: checkin.recordedAt, vitals: checkin.vitals, caregiverId: checkin.caregiverId },
+        anomalies: [],
+        severity: 'none',
+        severityScore: 0,
+      }, ['clinic']);
+    } else {
       event = await outbox.enqueueEvent(client, 'checkin.anomaly_detected', {
-        patient: { id: patient.id, fullName: patient.fullName, zipCode: patient.zipCode, conditions: patient.conditions, mobilityRestricted: patient.mobilityRestricted, assignedClinic: patient.assignedClinic },
+        patient: patientRef,
         checkin: { id: checkin.id, recordedAt: checkin.recordedAt, vitals: checkin.vitals, caregiverId: checkin.caregiverId },
         anomalies: detection.anomalies,
         severity: detection.severity,
         severityScore: detection.severityScore,
       });
     }
-    return { checkin, event };
+    return { checkin, event, anomalous: detection.anomalies.length > 0 };
   });
 
   // Kick the dispatcher now instead of waiting for the next poll (keeps end-to-end < 2 s).
   if (saved.event) setImmediate(() => outbox.flush().catch((e) => logger.error('outbox flush', e)));
 
   logger.info('checkin stored', { requestId, checkinId: saved.checkin.id, patientId: c.patientId, severity: detection.severity });
-  return { status: 201, body: { checkin: saved.checkin, eventId: saved.event ? saved.event.eventId : null } };
+  return { status: 201, body: { checkin: saved.checkin, eventId: saved.anomalous ? saved.event.eventId : null } };
 }
 
 /* ---------------------------- POST /api/checkins ---------------------------- */
@@ -145,6 +188,155 @@ router.post('/internal/checkins', async (req, res, next) => {
   }
 });
 
+/* ------------------------- Patients: list + onboarding ------------------------- */
+
+// GET /api/patients?search=&limit=   (clinic staff / admin; RBAC at the gateway, re-checked here)
+router.get('/api/patients', async (req, res, next) => {
+  try {
+    if (!requireRole(req, res, CLINIC_ROLES)) return undefined;
+    const search = String(req.query.search || '').trim().slice(0, 60);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const params = [limit];
+    let where = '';
+    if (search) {
+      params.push(`%${search.toLowerCase()}%`);
+      where = `WHERE lower(p.full_name) LIKE $2 OR lower(p.id) LIKE $2 OR p.zip_code LIKE $2`;
+    }
+    const { rows } = await pool.query(
+      `SELECT p.*, c.last_checkin_at, c.last_severity
+         FROM patients p
+         LEFT JOIN LATERAL (SELECT recorded_at AS last_checkin_at, severity AS last_severity
+                              FROM checkins WHERE patient_id = p.id ORDER BY recorded_at DESC LIMIT 1) c ON TRUE
+         ${where}
+        ORDER BY p.created_at DESC, p.id LIMIT $1`,
+      params,
+    );
+    return res.json({ patients: rows.map((r) => ({ ...toPatientDto(r), lastCheckinAt: r.last_checkin_at, lastSeverity: r.last_severity })) });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// POST /api/patients   (clinic staff / admin) - onboard a new patient, optionally with prescriptions
+router.post('/api/patients', async (req, res, next) => {
+  try {
+    if (!requireRole(req, res, CLINIC_ROLES)) return undefined;
+    const result = validatePatient(req.body);
+    if (!result.ok) return res.status(422).json({ error: 'validation_failed', details: result.errors });
+    const p = result.value;
+
+    const created = await withTransaction(async (client) => {
+      // Duplicate guard: same name + birth date already registered
+      const { rows: dup } = await client.query('SELECT id FROM patients WHERE lower(full_name) = lower($1) AND birth_date = $2', [p.fullName, p.birthDate]);
+      if (dup.length) return { duplicateOf: dup[0].id };
+
+      let row;
+      for (let attempt = 0; attempt < 5 && !row; attempt += 1) {
+        const { rows: [{ n }] } = await client.query(`SELECT nextval('patient_id_seq')::int AS n`);
+        const { rows } = await client.query(
+          `INSERT INTO patients (id, full_name, birth_date, sex, address_line, zip_code, country_code, latitude, longitude,
+                                 conditions, mobility_restricted, baseline, assigned_clinic, emergency_contact, notes, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+           ON CONFLICT (id) DO NOTHING RETURNING *`,
+          [`P-${n}`, p.fullName, p.birthDate, p.sex || null, p.addressLine, p.zipCode, p.countryCode, p.latitude ?? null, p.longitude ?? null,
+            p.conditions, p.mobilityRestricted, p.baseline, p.assignedClinic || null, p.emergencyContact, p.notes || null, req.user.id],
+        );
+        [row] = rows;
+      }
+      if (!row) throw new Error('Could not allocate a patient ID');
+
+      const meds = [];
+      for (const m of p.medications) {
+        const { rows: [mr] } = await client.query(
+          `INSERT INTO patient_medications (patient_id, name, dosage, frequency, times, instructions, prescribed_by, start_date, end_date, created_by)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,coalesce($8::date, current_date),$9,$10) RETURNING *`,
+          [row.id, m.name, m.dosage, m.frequency, m.times || [], m.instructions || null, m.prescribedBy || null, m.startDate || null, m.endDate || null, req.user.id],
+        );
+        meds.push(toMedicationDto(mr));
+      }
+      return { patient: toPatientDto(row), medications: meds };
+    });
+
+    if (created.duplicateOf) {
+      return res.status(409).json({ error: 'duplicate_patient', message: `A patient with this name and birth date already exists (${created.duplicateOf})`, patientId: created.duplicateOf });
+    }
+    logger.info('patient onboarded', { requestId: req.get('x-request-id'), patientId: created.patient.id, by: req.user.id });
+    return res.status(201).json(created);
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/* ----------------------------- Prescribed medications ----------------------------- */
+
+// GET /api/patients/:id/medications?includeInactive=true
+// Caregivers and family members see only their own patients (checked at the gateway and here).
+router.get('/api/patients/:id/medications', async (req, res, next) => {
+  try {
+    const patientId = req.params.id;
+    if (!assertPatientScope(req, res, patientId)) return undefined;
+    const { rows: pr } = await pool.query('SELECT id, full_name FROM patients WHERE id = $1', [patientId]);
+    if (!pr.length) return res.status(404).json({ error: 'not_found', message: 'Patient not found' });
+    const includeInactive = req.query.includeInactive === 'true';
+    const { rows } = await pool.query(
+      `SELECT * FROM patient_medications WHERE patient_id = $1 ${includeInactive ? '' : 'AND active = TRUE AND (end_date IS NULL OR end_date >= current_date)'}
+        ORDER BY active DESC, name`,
+      [patientId],
+    );
+    const meds = rows.map(toMedicationDto);
+    // Today's schedule (Asia/Manila is assumed by the times entered by the clinic)
+    const schedule = meds.filter((m) => m.active).flatMap((m) => (m.times.length ? m.times.map((t) => ({ time: t, medicationId: m.id, name: m.name, dosage: m.dosage })) : []))
+      .sort((a, b) => a.time.localeCompare(b.time));
+    return res.json({ patientId, patientName: pr[0].full_name, medications: meds, todaySchedule: schedule });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// POST /api/patients/:id/medications   (clinic staff) - add a prescription
+router.post('/api/patients/:id/medications', async (req, res, next) => {
+  try {
+    if (!requireRole(req, res, ['clinic_staff'])) return undefined;
+    const r = validateMedication(req.body);
+    if (!r.ok) return res.status(422).json({ error: 'validation_failed', details: r.errors });
+    const m = r.value;
+    const { rows: pr } = await pool.query('SELECT id FROM patients WHERE id = $1', [req.params.id]);
+    if (!pr.length) return res.status(404).json({ error: 'not_found', message: 'Patient not found' });
+    const { rows: [row] } = await pool.query(
+      `INSERT INTO patient_medications (patient_id, name, dosage, frequency, times, instructions, prescribed_by, start_date, end_date, created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,coalesce($8::date, current_date),$9,$10) RETURNING *`,
+      [req.params.id, m.name, m.dosage, m.frequency, m.times || [], m.instructions || null, m.prescribedBy || req.user.id, m.startDate || null, m.endDate || null, req.user.id],
+    );
+    return res.status(201).json(toMedicationDto(row));
+  } catch (err) {
+    return next(err);
+  }
+});
+
+// PATCH /api/patients/:id/medications/:medId   (clinic staff) - change dose/times or stop (active=false)
+router.patch('/api/patients/:id/medications/:medId', async (req, res, next) => {
+  try {
+    if (!requireRole(req, res, ['clinic_staff'])) return undefined;
+    if (!/^\d+$/.test(req.params.medId)) return res.status(400).json({ error: 'bad_request', message: 'Invalid medication id' });
+    const r = validateMedication(req.body, '', { partial: true });
+    if (!r.ok) return res.status(422).json({ error: 'validation_failed', details: r.errors });
+    const cols = { name: 'name', dosage: 'dosage', frequency: 'frequency', times: 'times', instructions: 'instructions', prescribedBy: 'prescribed_by', startDate: 'start_date', endDate: 'end_date', active: 'active' };
+    const sets = [];
+    const vals = [req.params.medId, req.params.id];
+    for (const [k, v] of Object.entries(r.value)) {
+      vals.push(v);
+      sets.push(`${cols[k]} = $${vals.length}`);
+    }
+    const { rows } = await pool.query(
+      `UPDATE patient_medications SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 AND patient_id = $2 RETURNING *`, vals,
+    );
+    if (!rows.length) return res.status(404).json({ error: 'not_found', message: 'Medication not found for this patient' });
+    return res.json(toMedicationDto(rows[0]));
+  } catch (err) {
+    return next(err);
+  }
+});
+
 /* ---------------------- GET /api/patients/:id/history ----------------------- */
 router.get('/api/patients/:id/history', async (req, res, next) => {
   try {
@@ -169,7 +361,7 @@ router.get('/api/patients/:id/history', async (req, res, next) => {
                 round(avg(heart_rate))::int AS avg_heart_rate,
                 round(avg(temperature_c), 1)::float AS avg_temperature_c, max(temperature_c)::float AS max_temperature_c,
                 round(avg(spo2))::int AS avg_spo2, min(spo2) AS min_spo2,
-                count(*) FILTER (WHERE medication_taken = false)::int AS missed_medication_days,
+                count(DISTINCT (recorded_at AT TIME ZONE 'Asia/Manila')::date) FILTER (WHERE medication_taken = false)::int AS missed_medication_days,
                 count(*) FILTER (WHERE severity IN ('high','critical'))::int AS high_severity_checkins
            FROM checkins WHERE patient_id = $1 AND recorded_at >= now() - ($2 || ' days')::interval`,
         [patientId, String(days)],

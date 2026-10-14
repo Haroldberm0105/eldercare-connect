@@ -12,12 +12,23 @@
  * fallback channel while SMS is retrying or after it ultimately fails.
  */
 const { pool } = require('./db');
-const { sendSms } = require('./twilioClient');
+const { sendSms, mode } = require('./smsSender');
 const logger = require('./lib/logger');
 
 const QUEUE_NAME = 'sms-dispatch';
 const MAX_ATTEMPTS = Number(process.env.SMS_MAX_ATTEMPTS || 5);
 const BACKOFF_MS = Number(process.env.SMS_BACKOFF_MS || 5000);
+const DAILY_LIMIT = () => Number(process.env.SMS_DAILY_LIMIT || 40);
+
+/** Real (non-simulated) texts sent today, Asia/Manila calendar day. */
+async function sentToday() {
+  const { rows: [r] } = await pool.query(
+    `SELECT count(*)::int AS n FROM notification_log
+      WHERE channel = 'sms' AND status IN ('sent','delivered')
+        AND updated_at >= (date_trunc('day', now() AT TIME ZONE 'Asia/Manila') AT TIME ZONE 'Asia/Manila')`,
+  );
+  return r.n;
+}
 
 async function updateLog(id, fields) {
   const sets = [];
@@ -32,9 +43,17 @@ async function updateLog(id, fields) {
 /** Processes one job. Throws to signal "retry". */
 async function processJob(data, attempt) {
   try {
+    if (mode().live && (await sentToday()) >= DAILY_LIMIT()) {
+      await updateLog(data.notificationId, { status: 'skipped', attempts: attempt, note: `Daily SMS limit reached (${DAILY_LIMIT()}); in-app alert only` });
+      logger.warn('sms skipped: daily limit reached', { notificationId: data.notificationId, limit: DAILY_LIMIT() });
+      return;
+    }
     const result = await sendSms({ to: data.to, body: data.body });
-    await updateLog(data.notificationId, { status: result.simulated ? 'simulated' : 'sent', provider_sid: result.sid, attempts: attempt, error: null });
-    logger.info('sms dispatched', { notificationId: data.notificationId, sid: result.sid, attempt });
+    await updateLog(data.notificationId, {
+      status: result.simulated ? 'simulated' : 'sent', provider_sid: result.sid, provider: result.simulated ? 'simulated' : result.provider,
+      attempts: attempt, error: null, note: result.note || (result.warning ? JSON.stringify(result.warning).slice(0, 300) : null),
+    });
+    logger.info('sms dispatched', { notificationId: data.notificationId, sid: result.sid, simulated: Boolean(result.simulated), attempt });
   } catch (err) {
     const final = err.permanent || attempt >= MAX_ATTEMPTS;
     await updateLog(data.notificationId, { status: final ? 'failed' : 'queued', attempts: attempt, error: String(err.message).slice(0, 500) });

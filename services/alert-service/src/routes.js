@@ -5,6 +5,8 @@ const { pool } = require('./db');
 const { dispatchAlert, SEVERITY_RANK } = require('./notifier');
 const mashup = require('./weatherAlertMashup');
 const { validateWebhook } = require('./twilioClient');
+const { verifyWebhookSignature } = require('./textbeeClient');
+const { sendSms, normalizePhone, mode: smsMode, allowlist } = require('./smsSender');
 const logger = require('./lib/logger');
 const { requireInternalToken, internalHeaders } = require('./lib/internalAuth');
 const { request } = require('./lib/resilientHttp');
@@ -64,7 +66,7 @@ router.get('/api/alerts/notifications', async (req, res, next) => {
     if (!patients.length) return res.json({ notifications: [] });
     const { rows } = await pool.query(
       `SELECT a.id, a.patient_id, a.source, a.rule_code, a.severity, a.title, a.message, a.metadata, a.created_at,
-              coalesce(json_agg(json_build_object('channel', n.channel, 'status', n.status)) FILTER (WHERE n.id IS NOT NULL), '[]') AS delivery
+              coalesce(json_agg(json_build_object('channel', n.channel, 'status', n.status, 'note', n.note, 'provider', n.provider)) FILTER (WHERE n.id IS NOT NULL), '[]') AS delivery
          FROM alerts a LEFT JOIN notification_log n ON n.alert_id = a.id
         WHERE a.patient_id = ANY($1)
         GROUP BY a.id ORDER BY a.created_at DESC LIMIT $2`,
@@ -188,45 +190,165 @@ function twiml(message) {
   return `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${esc}</Message></Response>`;
 }
 
-router.post('/webhooks/twilio/inbound', async (req, res, next) => {
+/**
+ * Shared SMS check-in logic for Twilio and TextBee inbound messages.
+ * @returns {Promise<string>} the reply text for the caregiver
+ */
+async function handleSmsCheckin({ from, body, messageId, requestId }) {
+  const phone = normalizePhone(from);
+  if (!phone) return 'This number is not registered as an ElderCare caregiver. Please contact your health center.';
+  const { rows: links } = await pool.query(
+    `SELECT user_id, patient_id FROM subscribers WHERE phone_e164 = $1 AND relation = 'caregiver' AND user_id IS NOT NULL`, [phone],
+  );
+  if (!links.length) return 'This number is not registered as an ElderCare caregiver. Please contact your health center.';
+
+  const caregiverId = links[0].user_id;
+  const allowedPatients = [...new Set(links.filter((l) => l.user_id === caregiverId).map((l) => l.patient_id))];
+  const parsed = parseSmsCheckin(body, allowedPatients);
+  if (parsed.help) return SMS_HELP_TEXT;
+  if (!parsed.ok) return `Not saved: ${parsed.errors.join('; ')}. Reply HELP for the format.`;
+
+  if (messageId && /^[A-Za-z0-9_-]{8,80}$/.test(messageId)) parsed.checkin.idempotencyKey = `sms-${messageId}`.slice(0, 100);
+  const r = await request('checkin-service', {
+    method: 'POST',
+    url: `${process.env.CHECKIN_SERVICE_URL || 'http://localhost:4001'}/internal/checkins`,
+    data: { caregiverId, allowedPatients, checkin: parsed.checkin },
+    headers: internalHeaders(requestId),
+    validateStatus: () => true,
+  }, { retries: 0, timeoutMs: 5000 });
+
+  logger.info('sms check-in', { caregiverId, patientId: parsed.checkin.patientId, status: r.status });
+  if (r.status === 201 || r.status === 200) {
+    const c = r.data.checkin;
+    const summary = c.severity === 'none' ? 'All readings normal.' : `${c.severity.toUpperCase()}: ${c.anomalies.map((a) => a.message).join('; ')}. Family and health center notified.`;
+    return `Saved check-in for ${c.patientId}. ${summary}`;
+  }
+  const why = (r.data && (r.data.details ? r.data.details.join('; ') : r.data.message)) || 'please try again later';
+  return `Not saved: ${why}`;
+}
+
+router.post('/webhooks/twilio/inbound', async (req, res) => {
+  if (process.env.TWILIO_VALIDATE_WEBHOOK !== 'false') {
+    const ok = validateWebhook(req.get('x-twilio-signature'), process.env.TWILIO_INBOUND_WEBHOOK_URL, req.body);
+    if (!ok) return res.status(403).json({ error: 'forbidden', message: 'Invalid Twilio signature' });
+  }
+  const { From, Body, MessageSid } = req.body || {};
+  let reply;
   try {
-    if (process.env.TWILIO_VALIDATE_WEBHOOK !== 'false') {
-      const ok = validateWebhook(req.get('x-twilio-signature'), process.env.TWILIO_INBOUND_WEBHOOK_URL, req.body);
-      if (!ok) return res.status(403).json({ error: 'forbidden', message: 'Invalid Twilio signature' });
-    }
-    res.type('text/xml');
-    const { From, Body, MessageSid } = req.body || {};
-    const { rows: links } = await pool.query(
-      `SELECT user_id, patient_id FROM subscribers WHERE phone_e164 = $1 AND relation = 'caregiver' AND user_id IS NOT NULL`, [From],
-    );
-    if (!links.length) return res.send(twiml('This number is not registered as an ElderCare caregiver. Please contact your health center.'));
-
-    const caregiverId = links[0].user_id;
-    const allowedPatients = [...new Set(links.filter((l) => l.user_id === caregiverId).map((l) => l.patient_id))];
-    const parsed = parseSmsCheckin(Body, allowedPatients);
-    if (parsed.help) return res.send(twiml(SMS_HELP_TEXT));
-    if (!parsed.ok) return res.send(twiml(`Not saved: ${parsed.errors.join('; ')}. Reply HELP for the format.`));
-
-    if (MessageSid && /^[A-Za-z0-9]{8,64}$/.test(MessageSid)) parsed.checkin.idempotencyKey = `sms-${MessageSid}`;
-    const r = await request('checkin-service', {
-      method: 'POST',
-      url: `${process.env.CHECKIN_SERVICE_URL || 'http://localhost:4001'}/internal/checkins`,
-      data: { caregiverId, allowedPatients, checkin: parsed.checkin },
-      headers: internalHeaders(req.get('x-request-id')),
-      validateStatus: () => true,
-    }, { retries: 0, timeoutMs: 5000 });
-
-    logger.info('sms check-in', { caregiverId, patientId: parsed.checkin.patientId, status: r.status });
-    if (r.status === 201 || r.status === 200) {
-      const c = r.data.checkin;
-      const summary = c.severity === 'none' ? 'All readings normal.' : `${c.severity.toUpperCase()}: ${c.anomalies.map((a) => a.message).join('; ')}. Family and health center notified.`;
-      return res.send(twiml(`Saved check-in for ${c.patientId}. ${summary}`));
-    }
-    const why = (r.data && (r.data.details ? r.data.details.join('; ') : r.data.message)) || 'please try again later';
-    return res.send(twiml(`Not saved: ${why}`));
+    reply = await handleSmsCheckin({ from: From, body: Body, messageId: MessageSid, requestId: req.get('x-request-id') });
   } catch (err) {
     logger.error('sms check-in failed', err);
-    if (!res.headersSent) return res.type('text/xml').send(twiml('Sorry, the check-in could not be saved right now. Please try again.'));
+    reply = 'Sorry, the check-in could not be saved right now. Please try again.';
+  }
+  return res.type('text/xml').send(twiml(reply));
+});
+
+/* ----------------------------- POST /webhooks/textbee ----------------------------- */
+// Configure in the TextBee dashboard -> Webhooks: URL https://<your-public-gateway>/webhooks/textbee,
+// events MESSAGE_RECEIVED (SMS check-ins) and MESSAGE_SENT / MESSAGE_DELIVERED / MESSAGE_FAILED (receipts).
+// The signing secret goes in TEXTBEE_WEBHOOK_SECRET. TextBee expects a 2xx within 10 seconds.
+const TEXTBEE_STATUS = { MESSAGE_SENT: 'sent', MESSAGE_DELIVERED: 'delivered', MESSAGE_FAILED: 'failed' };
+
+router.post('/webhooks/textbee', async (req, res, next) => {
+  try {
+    if (process.env.TEXTBEE_VALIDATE_WEBHOOK !== 'false') {
+      if (!verifyWebhookSignature(req.rawBody, req.get('x-signature'))) {
+        return res.status(401).json({ error: 'unauthorized', message: 'Invalid or missing X-Signature' });
+      }
+    }
+    const evt = req.body || {};
+    const event = evt.webhookEvent || evt.event;
+
+    if (TEXTBEE_STATUS[event]) {
+      const id = evt.smsBatchId || evt.smsId;
+      if (id) {
+        const { rowCount } = await pool.query(
+          `UPDATE notification_log SET status = $2, updated_at = now(), error = CASE WHEN $2 = 'failed' THEN coalesce($3, 'TextBee reported failure') ELSE error END
+            WHERE provider_sid = $1 AND channel = 'sms'`,
+          [id, TEXTBEE_STATUS[event], evt.errorMessage || evt.message || null],
+        );
+        logger.info('textbee status update', { event, matched: rowCount });
+      }
+      return res.status(200).json({ ok: true });
+    }
+
+    if (event === 'MESSAGE_RECEIVED') {
+      // Acknowledge first (TextBee's 10-second limit), then process and text the reply back.
+      res.status(200).json({ ok: true });
+      const dedupe = evt.idempotencyKey || evt.smsId;
+      if (dedupe) {
+        const { rowCount } = await pool.query('INSERT INTO alert_dedupe (dedupe_key) VALUES ($1) ON CONFLICT DO NOTHING', [`textbee-in:${dedupe}`]);
+        if (!rowCount) return undefined;
+      }
+      try {
+        const reply = await handleSmsCheckin({ from: evt.sender, body: evt.message, messageId: evt.smsId, requestId: req.get('x-request-id') });
+        await sendSms({ to: evt.sender, body: `[ElderCare] ${reply}` });
+      } catch (err) {
+        logger.error('textbee sms check-in failed', { error: err.message });
+      }
+      return undefined;
+    }
+    return res.status(200).json({ ignored: true });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+/* --------------------------- SMS contacts (subscribers) --------------------------- */
+// Who receives a patient's SMS alerts. Clinic staff / admins manage them (RBAC at the gateway).
+const RELATIONS = ['caregiver', 'family', 'sponsor'];
+function toSubscriberDto(r) {
+  return { id: r.id, patientId: r.patient_id, userId: r.user_id, name: r.name, relation: r.relation, phone: r.phone_e164, smsEnabled: r.sms_enabled, createdAt: r.created_at };
+}
+
+router.get('/api/alerts/subscribers', async (req, res, next) => {
+  try {
+    const patientId = String(req.query.patientId || '');
+    if (!patientId) return res.status(422).json({ error: 'validation_failed', details: ['patientId is required'] });
+    const { rows } = await pool.query('SELECT * FROM subscribers WHERE patient_id = $1 ORDER BY relation, name', [patientId]);
+    const m = smsMode();
+    return res.json({ patientId, subscribers: rows.map((r) => ({ ...toSubscriberDto(r), receivesRealSms: m.live && (!m.allowlistSize || allowlist().has(r.phone_e164)) })), sms: m });
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.post('/api/alerts/subscribers', async (req, res, next) => {
+  try {
+    if (!req.user || !['clinic_staff', 'system_admin'].includes(req.user.role)) return res.status(403).json({ error: 'forbidden' });
+    const b = req.body || {};
+    const errors = [];
+    if (typeof b.patientId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(b.patientId)) errors.push('patientId is required');
+    const name = typeof b.name === 'string' ? b.name.trim() : '';
+    if (name.length < 2 || name.length > 80) errors.push('name must be 2-80 characters');
+    if (!RELATIONS.includes(b.relation)) errors.push(`relation must be one of: ${RELATIONS.join(', ')}`);
+    const phone = normalizePhone(b.phone);
+    if (!phone) errors.push('phone must be a mobile number, e.g. 09171234567 or +639171234567');
+    if (b.userId !== undefined && b.userId !== null && b.userId !== '' && !/^[A-Za-z0-9._-]{1,64}$/.test(String(b.userId))) errors.push('userId is invalid');
+    if (b.relation === 'caregiver' && !b.userId) errors.push('userId is required for caregivers (used to match SMS check-ins)');
+    if (errors.length) return res.status(422).json({ error: 'validation_failed', details: errors });
+
+    const { rows } = await pool.query(
+      `INSERT INTO subscribers (patient_id, user_id, name, relation, phone_e164, created_by) VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (patient_id, phone_e164) DO UPDATE SET name = EXCLUDED.name, relation = EXCLUDED.relation, user_id = EXCLUDED.user_id, sms_enabled = TRUE
+       RETURNING *`,
+      [b.patientId, b.userId || null, name, b.relation, phone, req.user.id],
+    );
+    return res.status(201).json(toSubscriberDto(rows[0]));
+  } catch (err) {
+    return next(err);
+  }
+});
+
+router.delete('/api/alerts/subscribers/:id', async (req, res, next) => {
+  try {
+    if (!req.user || !['clinic_staff', 'system_admin'].includes(req.user.role)) return res.status(403).json({ error: 'forbidden' });
+    if (!/^\d+$/.test(req.params.id)) return res.status(400).json({ error: 'bad_request' });
+    // Disable rather than delete: notification_log rows reference subscribers.
+    const { rowCount } = await pool.query('UPDATE subscribers SET sms_enabled = FALSE WHERE id = $1', [req.params.id]);
+    if (!rowCount) return res.status(404).json({ error: 'not_found' });
+    return res.status(204).end();
+  } catch (err) {
     return next(err);
   }
 });

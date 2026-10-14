@@ -82,3 +82,8 @@ INSERT INTO alert_rules (code, description, min_severity, channels, config) VALU
   ('WEATHER_STORM',   'Severe storm / typhoon advisory for mobility-restricted patients', 'high', '{sms,in_app}', '{}'),
   ('MANUAL',          'Alert dispatched manually by clinic staff / admin',          'low',      '{sms,in_app}', '{}')
 ON CONFLICT (code) DO NOTHING;
+
+-- v1.1: SMS provider tracking (TextBee / Twilio) and safety notes (allow-list, daily limit)
+ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS provider TEXT;
+ALTER TABLE notification_log ADD COLUMN IF NOT EXISTS note     TEXT;
+ALTER TABLE subscribers      ADD COLUMN IF NOT EXISTS created_by TEXT;
